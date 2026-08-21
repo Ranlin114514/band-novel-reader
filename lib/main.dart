@@ -2046,6 +2046,51 @@ class _UnifiedSettingsPageState extends State<UnifiedSettingsPage> {
                   onTap: _isClearingCache ? null : _clearCache,
                 ),
               ),
+              const SizedBox(height: 24),
+              Text('关于', style: Theme.of(context).textTheme.titleMedium),
+              const SizedBox(height: 8),
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          const Icon(Icons.menu_book_outlined),
+                          const SizedBox(width: 10),
+                          Text(
+                            '手环通知小说',
+                            style: Theme.of(context).textTheme.titleMedium,
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 14),
+                      const Text('应用版本'),
+                      const SizedBox(height: 2),
+                      Text(
+                        '2.0（2.0.0+1）',
+                        style: Theme.of(context).textTheme.bodyMedium,
+                      ),
+                      const SizedBox(height: 14),
+                      const Text('开源仓库'),
+                      const SizedBox(height: 4),
+                      SelectableText(
+                        'https://github.com/Ranlin114514/band-novel-reader',
+                        style: TextStyle(
+                          color: Theme.of(context).colorScheme.primary,
+                          decoration: TextDecoration.underline,
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        '仓库包含完整源代码、GPL-3.0 许可、历史版本安装包和中英文更新日志。',
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
             ],
           ),
         ),
