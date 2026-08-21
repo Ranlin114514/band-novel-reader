@@ -1,0 +1,383 @@
+import 'dart:convert';
+
+import 'package:shared_preferences/shared_preferences.dart';
+
+class StoredNovelDocument {
+  const StoredNovelDocument({
+    required this.text,
+    required this.fileName,
+    required this.maxCharacters,
+    required this.modeIndex,
+    required this.intervalMilliseconds,
+    required this.customChunks,
+  });
+
+  final String text;
+  final String? fileName;
+  final int maxCharacters;
+  final int modeIndex;
+  final int intervalMilliseconds;
+  final List<String>? customChunks;
+}
+
+class StoredLibraryBook {
+  const StoredLibraryBook({
+    required this.id,
+    required this.text,
+    required this.fileName,
+    required this.customChunks,
+  });
+
+  final String id;
+  final String text;
+  final String? fileName;
+  final List<String>? customChunks;
+
+  Map<String, Object?> toJson() => {
+    'id': id,
+    'text': text,
+    'fileName': fileName,
+    'customChunks': customChunks,
+  };
+
+  static StoredLibraryBook? fromJson(Object? value) {
+    if (value is! Map) {
+      return null;
+    }
+    final id = value['id'];
+    final text = value['text'];
+    if (id is! String || id.isEmpty || text is! String) {
+      return null;
+    }
+    return StoredLibraryBook(
+      id: id,
+      text: text,
+      fileName: value['fileName'] as String?,
+      customChunks: _decodeChunksFromValue(value['customChunks']),
+    );
+  }
+}
+
+class StoredLibrary {
+  const StoredLibrary({required this.books, required this.selectedBookId});
+
+  final List<StoredLibraryBook> books;
+  final String? selectedBookId;
+}
+
+class StoredSendingSession {
+  const StoredSendingSession({
+    this.bookId,
+    required this.chunks,
+    required this.nextIndex,
+    required this.modeIndex,
+    required this.intervalMilliseconds,
+    required this.notificationBaseId,
+  });
+
+  final String? bookId;
+  final List<String> chunks;
+  final int nextIndex;
+  final int modeIndex;
+  final int intervalMilliseconds;
+  final int notificationBaseId;
+
+  bool get canResume => chunks.isNotEmpty && nextIndex < chunks.length;
+}
+
+class LocalAppStore {
+  LocalAppStore._();
+
+  static final instance = LocalAppStore._();
+
+  static const _onboardingCompletedKey = 'onboarding_completed';
+  static const _textKey = 'novel_text';
+  static const _fileNameKey = 'novel_file_name';
+  static const _maxCharactersKey = 'novel_max_characters';
+  static const _modeIndexKey = 'sending_mode_index';
+  static const _intervalMillisecondsKey = 'sending_interval_milliseconds';
+  static const _legacyIntervalSecondsKey = 'sending_interval_seconds';
+  static const _customChunksKey = 'novel_custom_chunks_json';
+  static const _libraryBooksKey = 'library_books_json';
+  static const _selectedBookIdKey = 'library_selected_book_id';
+  static const _sessionBookIdKey = 'session_book_id';
+  static const _sessionChunksKey = 'session_chunks_json';
+  static const _sessionNextIndexKey = 'session_next_index';
+  static const _sessionModeIndexKey = 'session_mode_index';
+  static const _sessionIntervalMillisecondsKey =
+      'session_interval_milliseconds';
+  static const _legacySessionIntervalSecondsKey = 'session_interval_seconds';
+  static const _sessionNotificationBaseIdKey = 'session_notification_base_id';
+
+  Future<StoredNovelDocument> loadDocument() async {
+    final preferences = await SharedPreferences.getInstance();
+    return StoredNovelDocument(
+      text: preferences.getString(_textKey) ?? '',
+      fileName: preferences.getString(_fileNameKey),
+      maxCharacters: (preferences.getInt(_maxCharactersKey) ?? 120)
+          .clamp(20, 1000)
+          .toInt(),
+      modeIndex: preferences.getInt(_modeIndexKey) ?? 0,
+      intervalMilliseconds: _readIntervalMilliseconds(
+        preferences,
+        _intervalMillisecondsKey,
+        _legacyIntervalSecondsKey,
+      ),
+      customChunks: _decodeChunks(preferences.getString(_customChunksKey)),
+    );
+  }
+
+  Future<void> saveDocument({
+    required String text,
+    required String? fileName,
+    required int maxCharacters,
+    required int modeIndex,
+    required int intervalMilliseconds,
+    required List<String>? customChunks,
+  }) async {
+    final preferences = await SharedPreferences.getInstance();
+    await _saveSettings(
+      preferences,
+      maxCharacters: maxCharacters,
+      modeIndex: modeIndex,
+      intervalMilliseconds: intervalMilliseconds,
+    );
+    await preferences.setString(_textKey, text);
+    if (fileName == null || fileName.isEmpty) {
+      await preferences.remove(_fileNameKey);
+    } else {
+      await preferences.setString(_fileNameKey, fileName);
+    }
+    await _saveCustomChunks(preferences, customChunks);
+  }
+
+  Future<StoredLibrary> loadLibrary() async {
+    final preferences = await SharedPreferences.getInstance();
+    final stored = preferences.getString(_libraryBooksKey);
+    final books = <StoredLibraryBook>[];
+    if (stored != null) {
+      try {
+        final decoded = jsonDecode(stored);
+        if (decoded is List) {
+          for (final item in decoded) {
+            final book = StoredLibraryBook.fromJson(item);
+            if (book != null) {
+              books.add(book);
+            }
+          }
+        }
+      } on FormatException {
+        // Corrupted local library data falls back to legacy data below.
+      }
+    }
+
+    if (books.isEmpty) {
+      final legacy = await loadDocument();
+      if (legacy.text.trim().isNotEmpty) {
+        final migrated = StoredLibraryBook(
+          id: _createBookId(legacy.fileName, legacy.text),
+          text: legacy.text,
+          fileName: legacy.fileName,
+          customChunks: legacy.customChunks,
+        );
+        books.add(migrated);
+        await saveLibrary(books: books, selectedBookId: migrated.id);
+      }
+    }
+
+    final selected = preferences.getString(_selectedBookIdKey);
+    final selectedId = books.any((book) => book.id == selected)
+        ? selected
+        : books.isEmpty
+        ? null
+        : books.first.id;
+    return StoredLibrary(books: books, selectedBookId: selectedId);
+  }
+
+  Future<void> saveLibrary({
+    required List<StoredLibraryBook> books,
+    required String? selectedBookId,
+  }) async {
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.setString(
+      _libraryBooksKey,
+      jsonEncode(books.map((book) => book.toJson()).toList(growable: false)),
+    );
+    if (selectedBookId == null) {
+      await preferences.remove(_selectedBookIdKey);
+    } else {
+      await preferences.setString(_selectedBookIdKey, selectedBookId);
+    }
+  }
+
+  Future<void> saveSettings({
+    required int maxCharacters,
+    required int modeIndex,
+    required int intervalMilliseconds,
+  }) async {
+    final preferences = await SharedPreferences.getInstance();
+    await _saveSettings(
+      preferences,
+      maxCharacters: maxCharacters,
+      modeIndex: modeIndex,
+      intervalMilliseconds: intervalMilliseconds,
+    );
+  }
+
+  Future<void> _saveSettings(
+    SharedPreferences preferences, {
+    required int maxCharacters,
+    required int modeIndex,
+    required int intervalMilliseconds,
+  }) async {
+    await preferences.setInt(
+      _maxCharactersKey,
+      maxCharacters.clamp(20, 1000).toInt(),
+    );
+    await preferences.setInt(_modeIndexKey, modeIndex);
+    await preferences.setInt(
+      _intervalMillisecondsKey,
+      intervalMilliseconds.clamp(100, 3600000).toInt(),
+    );
+  }
+
+  Future<void> _saveCustomChunks(
+    SharedPreferences preferences,
+    List<String>? customChunks,
+  ) async {
+    if (customChunks == null) {
+      await preferences.remove(_customChunksKey);
+    } else {
+      await preferences.setString(_customChunksKey, jsonEncode(customChunks));
+    }
+  }
+
+  Future<bool> hasCompletedOnboarding() async {
+    final preferences = await SharedPreferences.getInstance();
+    return preferences.getBool(_onboardingCompletedKey) ?? false;
+  }
+
+  Future<void> markOnboardingCompleted() async {
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.setBool(_onboardingCompletedKey, true);
+  }
+
+  Future<StoredSendingSession?> loadSendingSession() async {
+    final preferences = await SharedPreferences.getInstance();
+    final chunksJson = preferences.getString(_sessionChunksKey);
+    final nextIndex = preferences.getInt(_sessionNextIndexKey);
+    final notificationBaseId = preferences.getInt(
+      _sessionNotificationBaseIdKey,
+    );
+    if (chunksJson == null || nextIndex == null || notificationBaseId == null) {
+      return null;
+    }
+    final chunks = _decodeChunks(chunksJson);
+    if (chunks == null) {
+      return null;
+    }
+    return StoredSendingSession(
+      bookId: preferences.getString(_sessionBookIdKey),
+      chunks: chunks,
+      nextIndex: nextIndex.clamp(0, chunks.length).toInt(),
+      modeIndex: preferences.getInt(_sessionModeIndexKey) ?? 0,
+      intervalMilliseconds: _readIntervalMilliseconds(
+        preferences,
+        _sessionIntervalMillisecondsKey,
+        _legacySessionIntervalSecondsKey,
+      ),
+      notificationBaseId: notificationBaseId,
+    );
+  }
+
+  Future<void> saveSendingSession({
+    String? bookId,
+    required List<String> chunks,
+    required int nextIndex,
+    required int modeIndex,
+    required int intervalMilliseconds,
+    required int notificationBaseId,
+  }) async {
+    final preferences = await SharedPreferences.getInstance();
+    if (bookId == null) {
+      await preferences.remove(_sessionBookIdKey);
+    } else {
+      await preferences.setString(_sessionBookIdKey, bookId);
+    }
+    await preferences.setString(_sessionChunksKey, jsonEncode(chunks));
+    await preferences.setInt(
+      _sessionNextIndexKey,
+      nextIndex.clamp(0, chunks.length).toInt(),
+    );
+    await preferences.setInt(_sessionModeIndexKey, modeIndex);
+    await preferences.setInt(
+      _sessionIntervalMillisecondsKey,
+      intervalMilliseconds.clamp(100, 3600000).toInt(),
+    );
+    await preferences.setInt(_sessionNotificationBaseIdKey, notificationBaseId);
+  }
+
+  int _readIntervalMilliseconds(
+    SharedPreferences preferences,
+    String millisecondsKey,
+    String legacySecondsKey,
+  ) {
+    final milliseconds = preferences.getInt(millisecondsKey);
+    if (milliseconds != null) {
+      return milliseconds.clamp(100, 3600000).toInt();
+    }
+    final legacySeconds = preferences.getInt(legacySecondsKey);
+    if (legacySeconds != null) {
+      return (legacySeconds * 1000).clamp(100, 3600000).toInt();
+    }
+    return 1000;
+  }
+
+  Future<void> updateSendingProgress(int nextIndex) async {
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.setInt(_sessionNextIndexKey, nextIndex);
+  }
+
+  Future<void> clearSendingSession() async {
+    final preferences = await SharedPreferences.getInstance();
+    await Future.wait([
+      preferences.remove(_sessionBookIdKey),
+      preferences.remove(_sessionChunksKey),
+      preferences.remove(_sessionNextIndexKey),
+      preferences.remove(_sessionModeIndexKey),
+      preferences.remove(_sessionIntervalMillisecondsKey),
+      preferences.remove(_legacySessionIntervalSecondsKey),
+      preferences.remove(_sessionNotificationBaseIdKey),
+    ]);
+  }
+
+  static String createBookId(String? fileName, String text) {
+    return _createBookId(fileName, text);
+  }
+
+  static String _createBookId(String? fileName, String text) {
+    final base =
+        '${fileName ?? 'novel'}:${text.hashCode}:${DateTime.now().microsecondsSinceEpoch}';
+    return base.replaceAll(RegExp(r'[^a-zA-Z0-9]'), '').substring(0, 20);
+  }
+}
+
+List<String>? _decodeChunks(String? chunksJson) {
+  if (chunksJson == null) {
+    return null;
+  }
+  try {
+    final decoded = jsonDecode(chunksJson);
+    return _decodeChunksFromValue(decoded);
+  } on FormatException {
+    return null;
+  }
+}
+
+List<String>? _decodeChunksFromValue(Object? value) {
+  if (value is! List) {
+    return null;
+  }
+  final chunks = value.map((item) => item.toString()).toList(growable: false);
+  return chunks.isEmpty ? null : chunks;
+}

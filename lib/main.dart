@@ -1,0 +1,3136 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:math' as math;
+import 'dart:ui';
+
+import 'package:file_picker/file_picker.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_foreground_task/flutter_foreground_task.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+
+import 'book_metadata.dart';
+import 'cache_cleaner.dart';
+import 'local_app_store.dart';
+import 'network_book_importer.dart';
+
+const _notificationChannelId = 'novel_text_channel';
+const _notificationChannelName = '小说阅读通知';
+const _notificationChannelDescription = '用于逐段显示小说文本';
+const _notificationGroupKey = 'novel_text_group';
+
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  try {
+    FlutterForegroundTask.initCommunicationPort();
+  } catch (_) {
+    // 后台服务在实际启动时会再次初始化；启动阶段不阻塞主界面呈现。
+  }
+  runApp(const NovelNotifierApp());
+}
+
+enum SendingMode { foreground, background }
+
+extension SendingModeLabel on SendingMode {
+  String get title => switch (this) {
+    SendingMode.foreground => '前台自动发送',
+    SendingMode.background => '后台持续发送',
+  };
+
+  String get description => switch (this) {
+    SendingMode.foreground => '应用保持打开时，按设定间隔发送；适合较短、需要精确控制的阅读任务。',
+    SendingMode.background => '启用可见的系统服务通知，切换应用或锁屏后仍持续尝试发送；可在任务页停止。',
+  };
+}
+
+class SendingConfig {
+  const SendingConfig({required this.mode, required this.intervalMilliseconds});
+
+  const SendingConfig.defaults()
+    : mode = SendingMode.foreground,
+      intervalMilliseconds = 1000;
+
+  final SendingMode mode;
+  final int intervalMilliseconds;
+
+  SendingConfig copyWith({SendingMode? mode, int? intervalMilliseconds}) {
+    return SendingConfig(
+      mode: mode ?? this.mode,
+      intervalMilliseconds: intervalMilliseconds ?? this.intervalMilliseconds,
+    );
+  }
+}
+
+class AppSettingsResult {
+  const AppSettingsResult({required this.config, required this.maxCharacters});
+
+  final SendingConfig config;
+  final int maxCharacters;
+}
+
+class EditorResult {
+  const EditorResult({required this.text, required this.fileName});
+
+  final String text;
+  final String? fileName;
+}
+
+class NetworkImportRequest {
+  const NetworkImportRequest({
+    required this.url,
+    required this.title,
+    required this.authorization,
+  });
+
+  final String url;
+  final String title;
+  final String authorization;
+}
+
+class NovelNotifierApp extends StatelessWidget {
+  const NovelNotifierApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: '小说通知阅读器',
+      debugShowCheckedModeBanner: false,
+      theme: ThemeData(
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: const Color(0xFF0B6B69),
+          brightness: Brightness.light,
+        ),
+        useMaterial3: true,
+        inputDecorationTheme: const InputDecorationTheme(
+          border: OutlineInputBorder(),
+          alignLabelWithHint: true,
+        ),
+      ),
+      home: const LibraryHomePage(),
+    );
+  }
+}
+
+class NovelHomePage extends StatefulWidget {
+  const NovelHomePage({super.key});
+
+  @override
+  State<NovelHomePage> createState() => _NovelHomePageState();
+}
+
+class _NovelHomePageState extends State<NovelHomePage> {
+  String _novelText = '';
+  String? _fileName;
+  int _maxCharacters = 120;
+  SendingConfig _sendingConfig = const SendingConfig.defaults();
+  List<String>? _customChunks;
+  StoredSendingSession? _resumeSession;
+  bool _isLoading = true;
+  late final AppLifecycleListener _lifecycleListener;
+
+  List<String> get _chunks =>
+      _customChunks ??
+      NovelTextSplitter.split(_novelText, maxCharacters: _maxCharacters);
+
+  @override
+  void initState() {
+    super.initState();
+    _lifecycleListener = AppLifecycleListener(
+      onStateChange: (state) {
+        if (state != AppLifecycleState.resumed) {
+          unawaited(_persistDocument());
+        }
+      },
+    );
+    _restoreState();
+  }
+
+  @override
+  void dispose() {
+    _lifecycleListener.dispose();
+    super.dispose();
+  }
+
+  SendingMode _modeFromIndex(int index) {
+    return SendingMode.values[index.clamp(0, SendingMode.values.length - 1)];
+  }
+
+  Future<void> _restoreState() async {
+    final document = await LocalAppStore.instance.loadDocument();
+    final resumeSession = await LocalAppStore.instance.loadSendingSession();
+    final hasCompletedOnboarding = await LocalAppStore.instance
+        .hasCompletedOnboarding();
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _novelText = document.text;
+      _fileName = document.fileName;
+      _maxCharacters = document.maxCharacters;
+      _sendingConfig = SendingConfig(
+        mode: _modeFromIndex(document.modeIndex),
+        intervalMilliseconds: document.intervalMilliseconds,
+      );
+      _customChunks = document.customChunks;
+      _resumeSession = resumeSession?.canResume == true ? resumeSession : null;
+      _isLoading = false;
+    });
+    if (!hasCompletedOnboarding) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _openOnboarding());
+    }
+  }
+
+  Future<void> _persistDocument() {
+    return LocalAppStore.instance.saveDocument(
+      text: _novelText,
+      fileName: _fileName,
+      maxCharacters: _maxCharacters,
+      modeIndex: _sendingConfig.mode.index,
+      intervalMilliseconds: _sendingConfig.intervalMilliseconds,
+      customChunks: _customChunks,
+    );
+  }
+
+  Future<void> _openEditor() async {
+    final result = await Navigator.of(context).push<EditorResult>(
+      MaterialPageRoute(
+        builder: (_) => NovelEditorPage(
+          initialText: _novelText,
+          initialFileName: _fileName,
+        ),
+      ),
+    );
+    if (result == null || !mounted) {
+      return;
+    }
+    setState(() {
+      _novelText = result.text;
+      _fileName = result.fileName;
+      _customChunks = null;
+    });
+    await _persistDocument();
+  }
+
+  Future<void> _openSettings() async {
+    final result = await Navigator.of(context).push<AppSettingsResult>(
+      MaterialPageRoute(
+        builder: (_) => UnifiedSettingsPage(
+          initialConfig: _sendingConfig,
+          initialMaxCharacters: _maxCharacters,
+        ),
+      ),
+    );
+    if (result == null || !mounted) {
+      return;
+    }
+    setState(() {
+      _sendingConfig = result.config;
+      _maxCharacters = result.maxCharacters;
+      _customChunks = null;
+    });
+    await _persistDocument();
+  }
+
+  Future<void> _requestPermission() async {
+    final granted = await NotificationService.instance.requestPermission();
+    if (!mounted) {
+      return;
+    }
+    _showMessage(granted ? '通知权限已授予。' : '未获得通知权限，请在系统设置中开启。');
+  }
+
+  Future<void> _openOnboarding() async {
+    if (!mounted) {
+      return;
+    }
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(
+        fullscreenDialog: true,
+        builder: (_) => const OnboardingPage(),
+      ),
+    );
+  }
+
+  Future<void> _openPreview() async {
+    final chunks = _chunks;
+    if (chunks.isEmpty) {
+      _showMessage('请先导入或输入小说文本。');
+      return;
+    }
+    final adjustedChunks = await Navigator.of(context).push<List<String>>(
+      MaterialPageRoute(
+        builder: (_) =>
+            SegmentPreviewPage(chunks: chunks, maxCharacters: _maxCharacters),
+      ),
+    );
+    if (adjustedChunks == null || !mounted) {
+      return;
+    }
+    setState(() => _customChunks = adjustedChunks);
+    await _persistDocument();
+    _showMessage('已保存批量调整后的 ${adjustedChunks.length} 段文本。');
+  }
+
+  Future<void> _startTask() async {
+    final chunks = _chunks;
+    if (chunks.isEmpty) {
+      _showMessage('请先导入或输入小说文本。');
+      return;
+    }
+    final notificationBaseId = NotificationService.createBaseId(chunks.length);
+    await LocalAppStore.instance.saveSendingSession(
+      chunks: chunks,
+      nextIndex: 0,
+      modeIndex: _sendingConfig.mode.index,
+      intervalMilliseconds: _sendingConfig.intervalMilliseconds,
+      notificationBaseId: notificationBaseId,
+    );
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _resumeSession = StoredSendingSession(
+        chunks: chunks,
+        nextIndex: 0,
+        modeIndex: _sendingConfig.mode.index,
+        intervalMilliseconds: _sendingConfig.intervalMilliseconds,
+        notificationBaseId: notificationBaseId,
+      );
+    });
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(
+        builder: (_) => SendingTaskPage(
+          chunks: chunks,
+          config: _sendingConfig,
+          initialIndex: 0,
+          notificationBaseId: notificationBaseId,
+        ),
+      ),
+    );
+    if (mounted) {
+      final session = await LocalAppStore.instance.loadSendingSession();
+      setState(
+        () => _resumeSession = session?.canResume == true ? session : null,
+      );
+    }
+  }
+
+  Future<void> _resumeTask() async {
+    final session = _resumeSession;
+    if (session == null || !session.canResume) {
+      _showMessage('没有可恢复的发送任务。');
+      return;
+    }
+    final mode = _modeFromIndex(session.modeIndex);
+    final config = SendingConfig(
+      mode: mode,
+      intervalMilliseconds: session.intervalMilliseconds,
+    );
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(
+        builder: (_) => SendingTaskPage(
+          chunks: session.chunks,
+          config: config,
+          initialIndex: session.nextIndex,
+          notificationBaseId: session.notificationBaseId,
+        ),
+      ),
+    );
+    if (mounted) {
+      final updated = await LocalAppStore.instance.loadSendingSession();
+      setState(
+        () => _resumeSession = updated?.canResume == true ? updated : null,
+      );
+    }
+  }
+
+  Future<void> _pauseFromHome() async {
+    final session = _resumeSession;
+    if (session == null || !session.canResume) {
+      _showMessage('当前没有可暂停的发送任务。');
+      return;
+    }
+    await BackgroundNovelSender.stop();
+    final refreshed = await LocalAppStore.instance.loadSendingSession();
+    if (mounted) {
+      setState(
+        () => _resumeSession = refreshed?.canResume == true ? refreshed : null,
+      );
+      _showMessage('已暂停发送，当前书籍和进度已保存。');
+    }
+  }
+
+  void _showMessage(String message) {
+    ScaffoldMessenger.of(context)
+      ..clearSnackBars()
+      ..showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final chunks = _chunks;
+    final theme = Theme.of(context);
+    final hasBook = _novelText.trim().isNotEmpty;
+    final metadata = BookMetadataResolver.resolve(
+      fileName: _fileName,
+      text: _novelText,
+    );
+
+    if (_isLoading) {
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    }
+
+    return Scaffold(
+      appBar: AppBar(
+        leading: IconButton(
+          tooltip: '统一设置管理',
+          onPressed: _openSettings,
+          icon: const Icon(Icons.settings_outlined),
+        ),
+        title: const Text('我的书架'),
+        actions: [
+          IconButton(
+            tooltip: '导入或编辑书籍',
+            onPressed: _openEditor,
+            icon: const Icon(Icons.file_open_outlined),
+          ),
+        ],
+      ),
+      body: SafeArea(
+        child: ListView(
+          padding: const EdgeInsets.all(20),
+          children: [
+            GestureDetector(
+              onTap: _openEditor,
+              child: Card(
+                clipBehavior: Clip.antiAlias,
+                elevation: 2,
+                child: Padding(
+                  padding: const EdgeInsets.all(18),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      _BookCover(title: metadata.title, hasBook: hasBook),
+                      const SizedBox(width: 18),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              metadata.title,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: theme.textTheme.headlineSmall,
+                            ),
+                            const SizedBox(height: 8),
+                            Text(
+                              metadata.introduction,
+                              maxLines: 5,
+                              overflow: TextOverflow.ellipsis,
+                              style: theme.textTheme.bodyMedium,
+                            ),
+                            const SizedBox(height: 14),
+                            Text(
+                              hasBook
+                                  ? '${chunks.length} 段 · $_maxCharacters 字/段 · ${_sendingConfig.mode.title}'
+                                  : '点击此卡片导入 TXT 小说',
+                              style: theme.textTheme.labelMedium,
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            if (_resumeSession != null)
+              Card(
+                color: theme.colorScheme.tertiaryContainer,
+                child: Padding(
+                  padding: const EdgeInsets.all(14),
+                  child: Text(
+                    '已保存发送进度：可从第 ${_resumeSession!.nextIndex + 1}/${_resumeSession!.chunks.length} 段继续。',
+                  ),
+                ),
+              ),
+            if (_resumeSession != null) const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: FilledButton.icon(
+                    onPressed: hasBook ? _startTask : null,
+                    icon: const Icon(Icons.send_outlined),
+                    label: const Text('发送'),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: FilledButton.icon(
+                    onPressed: _resumeSession?.canResume == true
+                        ? _pauseFromHome
+                        : null,
+                    style: FilledButton.styleFrom(
+                      backgroundColor: theme.colorScheme.error,
+                      foregroundColor: theme.colorScheme.onError,
+                    ),
+                    icon: const Icon(Icons.pause_circle_outline),
+                    label: const Text('暂停'),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: FilledButton.icon(
+                    onPressed: _resumeSession?.canResume == true
+                        ? _resumeTask
+                        : null,
+                    icon: const Icon(Icons.play_circle_outline),
+                    label: const Text('继续'),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            OutlinedButton.icon(
+              onPressed: hasBook ? _openPreview : null,
+              icon: const Icon(Icons.preview_outlined),
+              label: const Text('查看完整分段与批量调整'),
+            ),
+            const SizedBox(height: 10),
+            TextButton.icon(
+              onPressed: _requestPermission,
+              icon: const Icon(Icons.verified_user_outlined),
+              label: const Text('通知权限'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class LibraryHomePage extends StatefulWidget {
+  const LibraryHomePage({super.key});
+
+  @override
+  State<LibraryHomePage> createState() => _LibraryHomePageState();
+}
+
+class _LibraryHomePageState extends State<LibraryHomePage> {
+  List<StoredLibraryBook> _books = const [];
+  String? _selectedBookId;
+  int _maxCharacters = 120;
+  SendingConfig _sendingConfig = const SendingConfig.defaults();
+  StoredSendingSession? _session;
+  bool _isBackgroundRunning = false;
+  bool _isLoading = true;
+  String? _startupError;
+  late final AppLifecycleListener _lifecycleListener;
+
+  StoredLibraryBook? get _selectedBook {
+    for (final book in _books) {
+      if (book.id == _selectedBookId) {
+        return book;
+      }
+    }
+    return _books.isEmpty ? null : _books.first;
+  }
+
+  List<String> get _selectedChunks {
+    final book = _selectedBook;
+    if (book == null) {
+      return const [];
+    }
+    return book.customChunks ??
+        NovelTextSplitter.split(book.text, maxCharacters: _maxCharacters);
+  }
+
+  Future<void> _safeRestoreState() async {
+    try {
+      await _restoreState();
+    } catch (error) {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+          _startupError = error.toString();
+        });
+      }
+    }
+  }
+
+  Future<void> _resetStartupData() async {
+    await LocalAppStore.instance.saveLibrary(
+      books: const [],
+      selectedBookId: null,
+    );
+    await LocalAppStore.instance.clearSendingSession();
+    if (mounted) {
+      setState(() {
+        _books = const [];
+        _selectedBookId = null;
+        _session = null;
+        _startupError = null;
+        _isLoading = false;
+      });
+    }
+  }
+
+  bool get _hasSelectedResumableSession =>
+      _session?.bookId == _selectedBook?.id && _session?.canResume == true;
+
+  @override
+  void initState() {
+    super.initState();
+    _lifecycleListener = AppLifecycleListener(
+      onStateChange: (state) {
+        if (state != AppLifecycleState.resumed) {
+          unawaited(_persistLibrary());
+        }
+      },
+    );
+    FlutterForegroundTask.addTaskDataCallback(_onBackgroundData);
+    _safeRestoreState();
+  }
+
+  @override
+  void dispose() {
+    FlutterForegroundTask.removeTaskDataCallback(_onBackgroundData);
+    _lifecycleListener.dispose();
+    super.dispose();
+  }
+
+  SendingMode _modeFromIndex(int index) {
+    return SendingMode.values[index.clamp(0, SendingMode.values.length - 1)];
+  }
+
+  Future<void> _restoreState() async {
+    final document = await LocalAppStore.instance.loadDocument();
+    final library = await LocalAppStore.instance.loadLibrary();
+    final session = await LocalAppStore.instance.loadSendingSession();
+    final onboardingCompleted = await LocalAppStore.instance
+        .hasCompletedOnboarding();
+    final isRunning = await FlutterForegroundTask.isRunningService;
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _books = library.books;
+      _selectedBookId = library.selectedBookId;
+      _maxCharacters = document.maxCharacters;
+      _sendingConfig = SendingConfig(
+        mode: _modeFromIndex(document.modeIndex),
+        intervalMilliseconds: document.intervalMilliseconds,
+      );
+      _session = session?.canResume == true ? session : null;
+      _isBackgroundRunning = isRunning;
+      _isLoading = false;
+    });
+    if (!onboardingCompleted) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _openOnboarding());
+    }
+  }
+
+  Future<void> _persistLibrary() async {
+    await LocalAppStore.instance.saveLibrary(
+      books: _books,
+      selectedBookId: _selectedBookId,
+    );
+    await LocalAppStore.instance.saveSettings(
+      maxCharacters: _maxCharacters,
+      modeIndex: _sendingConfig.mode.index,
+      intervalMilliseconds: _sendingConfig.intervalMilliseconds,
+    );
+  }
+
+  Future<void> _refreshSendingState() async {
+    final session = await LocalAppStore.instance.loadSendingSession();
+    final running = await FlutterForegroundTask.isRunningService;
+    if (mounted) {
+      setState(() {
+        _session = session?.canResume == true ? session : null;
+        _isBackgroundRunning = running;
+      });
+    }
+  }
+
+  void _onBackgroundData(Object data) {
+    if (data is! Map) {
+      return;
+    }
+    final type = data['type'];
+    if (type == 'progress' && data['sent'] is int && _session != null) {
+      final nextIndex = data['sent'] as int;
+      final current = _session!;
+      if (mounted) {
+        setState(() {
+          _session = StoredSendingSession(
+            bookId: current.bookId,
+            chunks: current.chunks,
+            nextIndex: nextIndex,
+            modeIndex: current.modeIndex,
+            intervalMilliseconds: current.intervalMilliseconds,
+            notificationBaseId: current.notificationBaseId,
+          );
+          _isBackgroundRunning = true;
+        });
+      }
+    } else if (type == 'complete') {
+      if (mounted) {
+        setState(() {
+          _session = null;
+          _isBackgroundRunning = false;
+        });
+      }
+    } else if (type == 'stopped' && mounted) {
+      setState(() => _isBackgroundRunning = false);
+    }
+  }
+
+  Future<void> _importBooks() async {
+    try {
+      final files = await FilePicker.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: const ['txt'],
+      );
+      if (files.isEmpty) {
+        return;
+      }
+      final imported = <StoredLibraryBook>[];
+      for (final file in files) {
+        final bytes = await file.readAsBytes();
+        final text = NovelTextFileDecoder.decode(bytes);
+        if (text.trim().isEmpty) {
+          continue;
+        }
+        imported.add(
+          StoredLibraryBook(
+            id: LocalAppStore.createBookId(file.name, text),
+            text: text,
+            fileName: file.name,
+            customChunks: null,
+          ),
+        );
+      }
+      if (imported.isEmpty || !mounted) {
+        _showMessage('未找到可导入的非空 TXT 文本。');
+        return;
+      }
+      final byIdentity = <String, StoredLibraryBook>{
+        for (final book in _books)
+          '${book.fileName}:${book.text.hashCode}': book,
+      };
+      for (final book in imported) {
+        byIdentity['${book.fileName}:${book.text.hashCode}'] = book;
+      }
+      setState(() {
+        _books = byIdentity.values.toList(growable: false);
+        _selectedBookId = imported.last.id;
+      });
+      await _persistLibrary();
+      _showMessage('已导入 ${imported.length} 本图书，并选中最新导入的图书。');
+    } on PlatformException catch (error) {
+      _showMessage('无法打开文件选择器：${error.message ?? error.code}');
+    } on FormatException catch (error) {
+      _showMessage(error.message.toString());
+    } catch (error) {
+      _showMessage('导入失败：$error');
+    }
+  }
+
+  Future<void> _showImportOptions() async {
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text('导入图书', style: Theme.of(sheetContext).textTheme.titleLarge),
+              const SizedBox(height: 8),
+              const Text('请选择图书来源。网络导入需要你提供有权访问的第三方图书 API 地址。'),
+              const SizedBox(height: 16),
+              FilledButton.icon(
+                onPressed: () => Navigator.of(sheetContext).pop('local'),
+                icon: const Icon(Icons.file_open_outlined),
+                label: const Text('本地导入 TXT'),
+              ),
+              const SizedBox(height: 10),
+              OutlinedButton.icon(
+                onPressed: () => Navigator.of(sheetContext).pop('network'),
+                icon: const Icon(Icons.language_outlined),
+                label: const Text('网络导入 API'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    if (action == 'local') {
+      await _importBooks();
+    } else if (action == 'network') {
+      await _importFromNetwork();
+    }
+  }
+
+  Future<void> _importFromNetwork() async {
+    final urlController = TextEditingController();
+    final titleController = TextEditingController();
+    final authorizationController = TextEditingController();
+    final request = await showDialog<NetworkImportRequest>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('网络导入图书'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: urlController,
+                keyboardType: TextInputType.url,
+                decoration: const InputDecoration(
+                  labelText: '图书 API 地址',
+                  hintText: 'https://example.com/book.txt 或 JSON API',
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: titleController,
+                decoration: const InputDecoration(labelText: '书名（接口未返回时使用）'),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: authorizationController,
+                obscureText: true,
+                decoration: const InputDecoration(
+                  labelText: 'Authorization（可选）',
+                  hintText: '例如 Bearer <token>',
+                ),
+              ),
+              const SizedBox(height: 10),
+              const Text(
+                '支持直接返回纯文本，或 JSON 中的 title/name 与 content/text/body 字段。',
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(
+              NetworkImportRequest(
+                url: urlController.text,
+                title: titleController.text,
+                authorization: authorizationController.text,
+              ),
+            ),
+            child: const Text('下载并导入'),
+          ),
+        ],
+      ),
+    );
+    urlController.dispose();
+    titleController.dispose();
+    authorizationController.dispose();
+    if (request == null) {
+      return;
+    }
+
+    try {
+      _showMessage('正在下载图书…');
+      final downloaded = await NetworkBookImporter.download(
+        url: request.url,
+        titleFallback: request.title,
+        authorization: request.authorization,
+      );
+      final fileName = '${downloaded.title}.txt';
+      final imported = StoredLibraryBook(
+        id: LocalAppStore.createBookId(fileName, downloaded.text),
+        text: downloaded.text,
+        fileName: fileName,
+        customChunks: null,
+      );
+      final byIdentity = <String, StoredLibraryBook>{
+        for (final book in _books)
+          '${book.fileName}:${book.text.hashCode}': book,
+        '${imported.fileName}:${imported.text.hashCode}': imported,
+      };
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _books = byIdentity.values.toList(growable: false);
+        _selectedBookId = imported.id;
+      });
+      await _persistLibrary();
+      _showMessage('已从网络导入《${downloaded.title}》。');
+    } on FormatException catch (error) {
+      _showMessage(error.message.toString());
+    } catch (error) {
+      _showMessage('网络导入失败：$error');
+    }
+  }
+
+  Future<void> _openLibrarySelector() async {
+    final selectedId = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) => SafeArea(
+        child: ListView(
+          shrinkWrap: true,
+          children: [
+            const ListTile(
+              title: Text('选择要发送的图书'),
+              subtitle: Text('发送、预览和断点续传都以当前选择的图书为准。'),
+            ),
+            for (final book in _books)
+              ListTile(
+                leading: const Icon(Icons.menu_book_outlined),
+                title: Text(
+                  BookMetadataResolver.resolve(
+                    fileName: book.fileName,
+                    text: book.text,
+                  ).title,
+                ),
+                subtitle: Text(
+                  book.fileName ?? '未命名 TXT',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                trailing: book.id == _selectedBookId
+                    ? const Icon(Icons.check_circle_outline)
+                    : null,
+                onTap: () => Navigator.of(sheetContext).pop(book.id),
+              ),
+            ListTile(
+              leading: const Icon(Icons.add_circle_outline),
+              title: const Text('导入更多 TXT 图书'),
+              onTap: () => Navigator.of(sheetContext).pop('__import__'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (selectedId == null) {
+      return;
+    }
+    if (selectedId == '__import__') {
+      await _showImportOptions();
+      return;
+    }
+    setState(() => _selectedBookId = selectedId);
+    await _persistLibrary();
+  }
+
+  Future<void> _openSettings() async {
+    final result = await Navigator.of(context).push<AppSettingsResult>(
+      MaterialPageRoute(
+        builder: (_) => UnifiedSettingsPage(
+          initialConfig: _sendingConfig,
+          initialMaxCharacters: _maxCharacters,
+        ),
+      ),
+    );
+    if (result == null || !mounted) {
+      return;
+    }
+    setState(() {
+      _sendingConfig = result.config;
+      _maxCharacters = result.maxCharacters;
+      _books = _books
+          .map(
+            (book) => StoredLibraryBook(
+              id: book.id,
+              text: book.text,
+              fileName: book.fileName,
+              customChunks: null,
+            ),
+          )
+          .toList(growable: false);
+    });
+    await _persistLibrary();
+  }
+
+  Future<void> _openPreview() async {
+    final book = _selectedBook;
+    final chunks = _selectedChunks;
+    if (book == null || chunks.isEmpty) {
+      _showMessage('请先选择并导入一本图书。');
+      return;
+    }
+    final adjusted = await Navigator.of(context).push<List<String>>(
+      MaterialPageRoute(
+        builder: (_) =>
+            SegmentPreviewPage(chunks: chunks, maxCharacters: _maxCharacters),
+      ),
+    );
+    if (adjusted == null || !mounted) {
+      return;
+    }
+    setState(() {
+      _books = _books
+          .map(
+            (item) => item.id == book.id
+                ? StoredLibraryBook(
+                    id: item.id,
+                    text: item.text,
+                    fileName: item.fileName,
+                    customChunks: adjusted,
+                  )
+                : item,
+          )
+          .toList(growable: false);
+    });
+    await _persistLibrary();
+  }
+
+  Future<void> _startSelectedBook() async {
+    final book = _selectedBook;
+    final chunks = _selectedChunks;
+    if (book == null || chunks.isEmpty) {
+      _showMessage('请先选择并导入一本图书。');
+      return;
+    }
+    final baseId = NotificationService.createBaseId(chunks.length);
+    await LocalAppStore.instance.saveSendingSession(
+      bookId: book.id,
+      chunks: chunks,
+      nextIndex: 0,
+      modeIndex: _sendingConfig.mode.index,
+      intervalMilliseconds: _sendingConfig.intervalMilliseconds,
+      notificationBaseId: baseId,
+    );
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _session = StoredSendingSession(
+        bookId: book.id,
+        chunks: chunks,
+        nextIndex: 0,
+        modeIndex: _sendingConfig.mode.index,
+        intervalMilliseconds: _sendingConfig.intervalMilliseconds,
+        notificationBaseId: baseId,
+      );
+    });
+    await _openTask(
+      chunks: chunks,
+      config: _sendingConfig,
+      initialIndex: 0,
+      notificationBaseId: baseId,
+      startImmediately: true,
+    );
+  }
+
+  Future<void> _togglePauseContinue() async {
+    final session = _session;
+    if (!_hasSelectedResumableSession || session == null) {
+      _showMessage('当前选择的图书没有可继续的发送任务。');
+      return;
+    }
+    if (_isBackgroundRunning) {
+      await BackgroundNovelSender.stop();
+      await _refreshSendingState();
+      _showMessage('已暂停发送并保存断点。');
+      return;
+    }
+    final config = SendingConfig(
+      mode: _modeFromIndex(session.modeIndex),
+      intervalMilliseconds: session.intervalMilliseconds,
+    );
+    await _openTask(
+      chunks: session.chunks,
+      config: config,
+      initialIndex: session.nextIndex,
+      notificationBaseId: session.notificationBaseId,
+      startImmediately: true,
+    );
+  }
+
+  Future<void> _openTask({
+    required List<String> chunks,
+    required SendingConfig config,
+    required int initialIndex,
+    required int notificationBaseId,
+    required bool startImmediately,
+  }) async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(
+        builder: (_) => SendingTaskPage(
+          chunks: chunks,
+          config: config,
+          initialIndex: initialIndex,
+          notificationBaseId: notificationBaseId,
+          startImmediately: startImmediately,
+        ),
+      ),
+    );
+    await _refreshSendingState();
+  }
+
+  Future<void> _requestPermission() async {
+    try {
+      final granted = await NotificationService.instance.requestPermission();
+      if (mounted) {
+        _showMessage(
+          granted ? '通知权限已授予，可以发送测试通知。' : '通知尚未开启；请点击“通知设置”在系统页面中允许通知。',
+        );
+      }
+    } catch (error) {
+      _showMessage('申请通知权限失败：$error');
+    }
+  }
+
+  Future<void> _openNotificationSettings() async {
+    try {
+      await NotificationService.instance.openNotificationSettings();
+    } catch (error) {
+      _showMessage(error.toString());
+    }
+  }
+
+  Future<void> _sendTestNotification() async {
+    try {
+      final granted = await NotificationService.instance.requestPermission();
+      if (!granted) {
+        _showMessage('未获得通知权限，请在系统设置中开启后重试。');
+        return;
+      }
+      await NotificationService.instance.showChunk(
+        id: 923456,
+        index: 0,
+        total: 1,
+        text: '这是一条测试通知。若手环已镜像手机通知，应能收到本条内容。',
+      );
+      _showMessage('测试通知已发送，请检查手机通知栏和手环。');
+    } catch (error) {
+      _showMessage('测试通知发送失败：$error');
+    }
+  }
+
+  Future<void> _openOnboarding() async {
+    if (mounted) {
+      await Navigator.of(context).push<void>(
+        MaterialPageRoute(
+          fullscreenDialog: true,
+          builder: (_) => const OnboardingPage(),
+        ),
+      );
+    }
+  }
+
+  void _showMessage(String message) {
+    if (!mounted) {
+      return;
+    }
+    ScaffoldMessenger.of(context)
+      ..clearSnackBars()
+      ..showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_isLoading) {
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    }
+    if (_startupError != null) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('手环通知小说')),
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.error_outline, size: 56),
+                const SizedBox(height: 16),
+                const Text('书库加载失败'),
+                const SizedBox(height: 8),
+                const Text(
+                  '可以重试加载；若本地旧数据异常，也可以清空书库后重新导入 TXT 图书。',
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 20),
+                FilledButton(
+                  onPressed: () {
+                    setState(() {
+                      _isLoading = true;
+                      _startupError = null;
+                    });
+                    _safeRestoreState();
+                  },
+                  child: const Text('重试加载'),
+                ),
+                TextButton(
+                  onPressed: _resetStartupData,
+                  child: const Text('清空书库并继续'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+    final theme = Theme.of(context);
+    final book = _selectedBook;
+    final chunks = _selectedChunks;
+    final metadata = BookMetadataResolver.resolve(
+      fileName: book?.fileName,
+      text: book?.text ?? '',
+    );
+    final session = _hasSelectedResumableSession ? _session : null;
+    final progress =
+        (session == null || session.chunks.isEmpty
+                ? 0.0
+                : session.nextIndex / session.chunks.length)
+            .clamp(0.0, 1.0)
+            .toDouble();
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('我的书库'),
+        actions: [
+          IconButton(
+            tooltip: '选择图书',
+            onPressed: _books.isEmpty ? null : _openLibrarySelector,
+            icon: const Icon(Icons.library_books_outlined),
+          ),
+          IconButton(
+            tooltip: '导入图书',
+            onPressed: _showImportOptions,
+            icon: const Icon(Icons.add_to_photos_outlined),
+          ),
+          IconButton(
+            tooltip: '统一设置管理',
+            onPressed: _openSettings,
+            icon: const Icon(Icons.settings_outlined),
+          ),
+        ],
+      ),
+      body: SafeArea(
+        child: ListView(
+          padding: const EdgeInsets.all(20),
+          children: [
+            GestureDetector(
+              onTap: _openLibrarySelector,
+              child: Card(
+                clipBehavior: Clip.antiAlias,
+                child: Padding(
+                  padding: const EdgeInsets.all(18),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      _BookCover(title: metadata.title, hasBook: book != null),
+                      const SizedBox(width: 18),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              metadata.title,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: theme.textTheme.headlineSmall,
+                            ),
+                            const SizedBox(height: 8),
+                            Text(
+                              metadata.introduction,
+                              maxLines: 5,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            const SizedBox(height: 12),
+                            Text(
+                              book == null
+                                  ? '点击选择图书，或使用右上角按钮导入 TXT。'
+                                  : '当前第 ${_books.indexWhere((item) => item.id == book.id) + 1}/${_books.length} 本 · ${chunks.length} 段',
+                              style: theme.textTheme.labelMedium,
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            if (session != null)
+              _HomeProgressCard(
+                session: session,
+                progress: progress,
+                isRunning: _isBackgroundRunning,
+              ),
+            if (session != null) const SizedBox(height: 14),
+            if (book != null)
+              OutlinedButton.icon(
+                onPressed: _openPreview,
+                icon: const Icon(Icons.preview_outlined),
+                label: const Text('查看完整分段与批量调整'),
+              ),
+            if (book != null) const SizedBox(height: 14),
+            FilledButton.icon(
+              onPressed: session == null
+                  ? (book == null ? null : _startSelectedBook)
+                  : _togglePauseContinue,
+              style: session == null
+                  ? null
+                  : FilledButton.styleFrom(
+                      backgroundColor: _isBackgroundRunning
+                          ? theme.colorScheme.error
+                          : theme.colorScheme.secondary,
+                      foregroundColor: _isBackgroundRunning
+                          ? theme.colorScheme.onError
+                          : theme.colorScheme.onSecondary,
+                    ),
+              icon: Icon(
+                session == null
+                    ? Icons.send_outlined
+                    : _isBackgroundRunning
+                    ? Icons.pause_circle_outline
+                    : Icons.play_circle_outline,
+              ),
+              label: Text(
+                session == null ? '发送' : (_isBackgroundRunning ? '暂停' : '继续'),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 8,
+              runSpacing: 4,
+              children: [
+                TextButton.icon(
+                  onPressed: _requestPermission,
+                  icon: const Icon(Icons.verified_user_outlined),
+                  label: const Text('通知权限'),
+                ),
+                TextButton.icon(
+                  onPressed: _sendTestNotification,
+                  icon: const Icon(Icons.notifications_active_outlined),
+                  label: const Text('发送测试通知'),
+                ),
+                TextButton.icon(
+                  onPressed: _openNotificationSettings,
+                  icon: const Icon(Icons.settings_applications_outlined),
+                  label: const Text('通知设置'),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _HomeProgressCard extends StatelessWidget {
+  const _HomeProgressCard({
+    required this.session,
+    required this.progress,
+    required this.isRunning,
+  });
+
+  final StoredSendingSession session;
+  final double progress;
+  final bool isRunning;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Card(
+      color: theme.colorScheme.primaryContainer,
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                Icon(
+                  isRunning ? Icons.sync_outlined : Icons.pause_circle_outline,
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  isRunning ? '正在发送' : '发送已暂停',
+                  style: theme.textTheme.titleMedium,
+                ),
+                const Spacer(),
+                Text(
+                  '${(progress * 100).toStringAsFixed(2)}%',
+                  style: theme.textTheme.titleMedium,
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(10),
+              child: LinearProgressIndicator(
+                value: progress,
+                minHeight: 14,
+                color: theme.colorScheme.primary,
+                backgroundColor: theme.colorScheme.surfaceContainerHighest,
+              ),
+            ),
+            const SizedBox(height: 10),
+            Text(
+              '已发送 ${session.nextIndex}/${session.chunks.length} 段 · 剩余 ${session.chunks.length - session.nextIndex} 段',
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _BookCover extends StatelessWidget {
+  const _BookCover({required this.title, required this.hasBook});
+
+  final String title;
+  final bool hasBook;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final titleRunes = title.runes.toList();
+    final shortTitle = titleRunes.length > 12
+        ? '${String.fromCharCodes(titleRunes.take(12))}…'
+        : title;
+    return Container(
+      width: 112,
+      height: 164,
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(8),
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: hasBook
+              ? [const Color(0xFF123B4A), const Color(0xFF2C6A73)]
+              : [
+                  colorScheme.outlineVariant,
+                  colorScheme.surfaceContainerHighest,
+                ],
+        ),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x33000000),
+            blurRadius: 8,
+            offset: Offset(3, 5),
+          ),
+        ],
+      ),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 18, 12, 16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(
+              hasBook ? Icons.menu_book_outlined : Icons.add_circle_outline,
+              color: hasBook ? Colors.white : colorScheme.onSurfaceVariant,
+            ),
+            const Spacer(),
+            Text(
+              shortTitle,
+              maxLines: 4,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                color: hasBook ? Colors.white : colorScheme.onSurfaceVariant,
+                fontWeight: FontWeight.w700,
+                height: 1.2,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class OnboardingPage extends StatefulWidget {
+  const OnboardingPage({super.key});
+
+  @override
+  State<OnboardingPage> createState() => _OnboardingPageState();
+}
+
+class _OnboardingPageState extends State<OnboardingPage> {
+  var _step = 0;
+  bool? _notificationGranted;
+  bool _requestingPermission = false;
+  int _permissionStateVersion = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_readNotificationStatus());
+  }
+
+  Future<void> _readNotificationStatus() async {
+    final version = _permissionStateVersion;
+    final granted = await NotificationService.instance
+        .areNotificationsEnabled();
+    if (mounted && version == _permissionStateVersion) {
+      setState(() => _notificationGranted = granted);
+    }
+  }
+
+  Future<void> _requestNotifications() async {
+    if (_requestingPermission) {
+      return;
+    }
+    final version = ++_permissionStateVersion;
+    setState(() => _requestingPermission = true);
+    try {
+      final granted = await NotificationService.instance.requestPermission();
+      if (mounted && version == _permissionStateVersion) {
+        setState(() => _notificationGranted = granted);
+      }
+    } catch (_) {
+      if (mounted && version == _permissionStateVersion) {
+        setState(() => _notificationGranted = false);
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _requestingPermission = false);
+      }
+    }
+  }
+
+  Future<void> _openNotificationSettings() async {
+    try {
+      await NotificationService.instance.openNotificationSettings();
+    } catch (_) {
+      // 不能跳转时仍保留再次请求权限的按钮。
+    }
+  }
+
+  Future<void> _next() async {
+    if (_step == 0) {
+      setState(() => _step = 1);
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+      if (mounted && _notificationGranted != true) {
+        await _requestNotifications();
+      }
+      return;
+    }
+    if (_step == 1 && _notificationGranted != true) {
+      await _requestNotifications();
+      return;
+    }
+    if (_step < 2) {
+      setState(() => _step++);
+      return;
+    }
+    await _finish();
+  }
+
+  Future<void> _finish() async {
+    if (_notificationGranted != true) {
+      setState(() => _step = 1);
+      await _requestNotifications();
+      return;
+    }
+    await LocalAppStore.instance.markOnboardingCompleted();
+    if (mounted) {
+      Navigator.of(context).pop();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final pages = <({IconData icon, String title, String body})>[
+      (
+        icon: Icons.menu_book_outlined,
+        title: '欢迎使用小说通知阅读器',
+        body:
+            '此页仅以示意方式说明小说导入流程。引导结束后不会显示或自动导入示例小说；请使用自己的 TXT 图书建立书库，再统一设置每段字数。',
+      ),
+      (
+        icon: Icons.notifications_active_outlined,
+        title: '请开启通知权限',
+        body: '小说的完整分段会通过系统通知显示。Android 13 及以上需要在系统弹窗中允许通知后才能发送。',
+      ),
+      (
+        icon: Icons.save_outlined,
+        title: '本地保存与断点续传',
+        body: '小说、分段规则、发送模式和未完成的发送位置均保存在本机。发送中止或重启应用后，可从上一次进度继续。',
+      ),
+    ];
+    final page = pages[_step];
+    final isLast = _step == pages.length - 1;
+
+    return PopScope(
+      canPop: false,
+      child: Scaffold(
+        appBar: AppBar(title: Text('使用引导 ${_step + 1}/${pages.length}')),
+        body: SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              children: [
+                const Spacer(),
+                Icon(
+                  page.icon,
+                  size: 88,
+                  color: Theme.of(context).colorScheme.primary,
+                ),
+                const SizedBox(height: 28),
+                Text(
+                  page.title,
+                  style: Theme.of(context).textTheme.headlineSmall,
+                ),
+                const SizedBox(height: 16),
+                Text(page.body, textAlign: TextAlign.center),
+                if (_step == 1) ...[
+                  const SizedBox(height: 16),
+                  Card(
+                    color: Theme.of(context).colorScheme.tertiaryContainer,
+                    child: Padding(
+                      padding: const EdgeInsets.all(14),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Icon(
+                            Icons.watch_outlined,
+                            color: Theme.of(context)
+                                .colorScheme
+                                .onTertiaryContainer,
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  '还需开启手环通知同步',
+                                  style: Theme.of(context).textTheme.titleSmall
+                                      ?.copyWith(
+                                        color: Theme.of(context)
+                                            .colorScheme
+                                            .onTertiaryContainer,
+                                      ),
+                                ),
+                                const SizedBox(height: 4),
+                                Text(
+                                  '请打开你的手环配套管理软件，在“设备 / 通知 / 应用通知（或应用提醒）”中找到“手环通知小说”，并开启通知同步或镜像。仅允许手机系统通知不足以让手环显示内容。',
+                                  style: Theme.of(context).textTheme.bodySmall
+                                      ?.copyWith(
+                                        color: Theme.of(context)
+                                            .colorScheme
+                                            .onTertiaryContainer,
+                                      ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  FilledButton.icon(
+                    onPressed: _requestingPermission
+                        ? null
+                        : _requestNotifications,
+                    icon: _requestingPermission
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.verified_user_outlined),
+                    label: Text(
+                      _notificationGranted == true ? '通知权限已开启' : '在系统弹窗中允许通知',
+                    ),
+                  ),
+                  if (_notificationGranted == false) ...[
+                    const Padding(
+                      padding: EdgeInsets.only(top: 8),
+                      child: Text('必须开启通知权限后才能继续。若系统弹窗未出现或此前已拒绝，请打开通知设置后允许通知。'),
+                    ),
+                    TextButton.icon(
+                      onPressed: _openNotificationSettings,
+                      icon: const Icon(Icons.settings_applications_outlined),
+                      label: const Text('打开系统通知设置'),
+                    ),
+                  ],
+                ],
+                const Spacer(),
+                Row(
+                  children: [
+                    if (_step > 0)
+                      TextButton(
+                        onPressed: () => setState(() => _step--),
+                        child: const Text('上一步'),
+                      ),
+                    const Spacer(),
+                    FilledButton.icon(
+                      onPressed: _step == 1 && _notificationGranted != true
+                          ? null
+                          : _next,
+                      icon: Icon(
+                        isLast ? Icons.check_outlined : Icons.arrow_forward,
+                      ),
+                      label: Text(isLast ? '完成' : '下一步'),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class NovelEditorPage extends StatefulWidget {
+  const NovelEditorPage({
+    required this.initialText,
+    required this.initialFileName,
+    super.key,
+  });
+
+  final String initialText;
+  final String? initialFileName;
+
+  @override
+  State<NovelEditorPage> createState() => _NovelEditorPageState();
+}
+
+class _NovelEditorPageState extends State<NovelEditorPage> {
+  late final TextEditingController _textController;
+  String? _fileName;
+  bool _isImporting = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _textController = TextEditingController(text: widget.initialText);
+  }
+
+  @override
+  void dispose() {
+    _textController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _importTxt() async {
+    setState(() => _isImporting = true);
+    try {
+      final file = await FilePicker.pickFile(
+        type: FileType.custom,
+        allowedExtensions: const ['txt'],
+      );
+      if (file == null) {
+        return;
+      }
+      final bytes = await file.readAsBytes();
+      if (bytes.isEmpty) {
+        throw const FormatException('所选文件为空或无法读取。');
+      }
+      final text = NovelTextFileDecoder.decode(bytes);
+      if (text.trim().isEmpty) {
+        throw const FormatException('所选 TXT 文件不包含可用文本。');
+      }
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _textController.text = text;
+        _fileName = file.name;
+      });
+      _showMessage('已导入 ${file.name}。');
+    } on PlatformException catch (error) {
+      _showMessage('无法打开文件选择器：${error.message ?? error.code}');
+    } on FormatException catch (error) {
+      _showMessage(error.message.toString());
+    } catch (error) {
+      _showMessage('导入失败：$error');
+    } finally {
+      if (mounted) {
+        setState(() => _isImporting = false);
+      }
+    }
+  }
+
+  void _save() {
+    Navigator.of(context)
+        .pop(EditorResult(text: _textController.text, fileName: _fileName));
+  }
+
+  void _showMessage(String message) {
+    if (!mounted) {
+      return;
+    }
+    ScaffoldMessenger.of(context)
+      ..clearSnackBars()
+      ..showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('小说与分段'),
+        actions: [TextButton(onPressed: _save, child: const Text('保存'))],
+      ),
+      body: SafeArea(
+        child: ListView(
+          padding: const EdgeInsets.all(16),
+          children: [
+            OutlinedButton.icon(
+              onPressed: _isImporting ? null : _importTxt,
+              icon: _isImporting
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.file_open_outlined),
+              label: const Text('导入 TXT 小说'),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              _fileName == null ? '未选择文件，也可以直接在下方输入文本。' : '当前文件：$_fileName',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+
+            const SizedBox(height: 16),
+            TextField(
+              controller: _textController,
+              minLines: 12,
+              maxLines: 18,
+              decoration: const InputDecoration(
+                labelText: '小说正文',
+                hintText: '导入 TXT 后会显示在这里；也可以直接粘贴或编辑。',
+                prefixIcon: Padding(
+                  padding: EdgeInsets.only(bottom: 248),
+                  child: Icon(Icons.subject_outlined),
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Text(
+                  '原文 ${_textController.text.runes.length} 个字符。分段字数、发送方式和缓存清理均在“统一设置管理”页面配置；保存后可在完整分段预览页对指定区间批量调整。',
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class UnifiedSettingsPage extends StatefulWidget {
+  const UnifiedSettingsPage({
+    required this.initialConfig,
+    required this.initialMaxCharacters,
+    super.key,
+  });
+
+  final SendingConfig initialConfig;
+  final int initialMaxCharacters;
+
+  @override
+  State<UnifiedSettingsPage> createState() => _UnifiedSettingsPageState();
+}
+
+class _UnifiedSettingsPageState extends State<UnifiedSettingsPage> {
+  late SendingMode _mode;
+  late final TextEditingController _intervalController;
+  late final TextEditingController _maxCharactersController;
+  String? _cacheMessage;
+  String? _autoSaveMessage;
+  bool _isClearingCache = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _mode = widget.initialConfig.mode;
+    _intervalController = TextEditingController(
+      text: widget.initialConfig.intervalMilliseconds.toString(),
+    );
+    _maxCharactersController = TextEditingController(
+      text: widget.initialMaxCharacters.toString(),
+    );
+    _intervalController.addListener(_onSettingChanged);
+    _maxCharactersController.addListener(_onSettingChanged);
+  }
+
+  @override
+  void dispose() {
+    _intervalController.dispose();
+    _maxCharactersController.dispose();
+    super.dispose();
+  }
+
+  int get _intervalMilliseconds {
+    final entered = int.tryParse(_intervalController.text.trim()) ?? 1000;
+    const minimum = 100;
+    return entered.clamp(minimum, 3600000).toInt();
+  }
+
+  int get _maxCharacters {
+    final entered = int.tryParse(_maxCharactersController.text.trim()) ?? 120;
+    return entered.clamp(20, 1000).toInt();
+  }
+
+  Future<void> _clearCache() async {
+    setState(() => _isClearingCache = true);
+    try {
+      final bytes = await CacheCleaner.clearTemporaryCache();
+      if (mounted) {
+        setState(
+          () => _cacheMessage =
+              '已清理 ${CacheCleaner.formatBytes(bytes)} 临时缓存；书籍和进度未删除。',
+        );
+      }
+    } catch (error) {
+      if (mounted) {
+        setState(() => _cacheMessage = '缓存清理失败：$error');
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isClearingCache = false);
+      }
+    }
+  }
+
+  AppSettingsResult get _result => AppSettingsResult(
+    config: SendingConfig(
+      mode: _mode,
+      intervalMilliseconds: _intervalMilliseconds,
+    ),
+    maxCharacters: _maxCharacters,
+  );
+
+  Future<void> _persistSettings() async {
+    await LocalAppStore.instance.saveSettings(
+      maxCharacters: _maxCharacters,
+      modeIndex: _mode.index,
+      intervalMilliseconds: _intervalMilliseconds,
+    );
+    if (mounted) {
+      setState(() => _autoSaveMessage = '设置已自动保存');
+    }
+  }
+
+  void _onSettingChanged() {
+    setState(() {});
+    unawaited(_persistSettings());
+  }
+
+  Future<void> _close() async {
+    await _persistSettings();
+    if (mounted) {
+      Navigator.of(context).pop(_result);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    const minimum = 100;
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) {
+          unawaited(_close());
+        }
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('统一设置管理'),
+          leading: IconButton(
+            tooltip: '返回',
+            onPressed: _close,
+            icon: const Icon(Icons.arrow_back),
+          ),
+        ),
+        body: SafeArea(
+          child: ListView(
+            padding: const EdgeInsets.all(16),
+            children: [
+              Text('分段规则', style: Theme.of(context).textTheme.titleMedium),
+              if (_autoSaveMessage != null) ...[
+                const SizedBox(height: 4),
+                Text(
+                  _autoSaveMessage!,
+                  style: Theme.of(context).textTheme.labelMedium,
+                ),
+              ],
+              const SizedBox(height: 8),
+              TextField(
+                controller: _maxCharactersController,
+                keyboardType: TextInputType.number,
+                inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                decoration: InputDecoration(
+                  labelText: '统一每段最大字符数',
+                  helperText:
+                      '支持 20–1000；保存后统一按 $_maxCharacters 字/段重新切分，并覆盖局部批量调整。',
+                  prefixIcon: const Icon(Icons.format_size_outlined),
+                ),
+              ),
+              const SizedBox(height: 24),
+              Text('发送规则', style: Theme.of(context).textTheme.titleMedium),
+              const SizedBox(height: 8),
+              SegmentedButton<SendingMode>(
+                segments: const [
+                  ButtonSegment(
+                    value: SendingMode.foreground,
+                    icon: Icon(Icons.phone_android_outlined),
+                    label: Text('前台'),
+                  ),
+                  ButtonSegment(
+                    value: SendingMode.background,
+                    icon: Icon(Icons.cloud_sync_outlined),
+                    label: Text('后台'),
+                  ),
+                ],
+                selected: {_mode},
+                onSelectionChanged: (selected) {
+                  setState(() => _mode = selected.first);
+                  unawaited(_persistSettings());
+                },
+              ),
+              const SizedBox(height: 12),
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Text(_mode.description),
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: _intervalController,
+                keyboardType: TextInputType.number,
+                inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                decoration: InputDecoration(
+                  labelText: '自动发送间隔（毫秒）',
+                  helperText: '支持 $minimum–3600000 ms；例如 500 ms 即每 0.5 秒发送一段。',
+                  prefixIcon: const Icon(Icons.timer_outlined),
+                ),
+              ),
+              if (_mode == SendingMode.background) ...[
+                const SizedBox(height: 12),
+                const Card(
+                  child: Padding(
+                    padding: EdgeInsets.all(16),
+                    child: Text('后台模式会显示一条系统服务通知，并受安卓对长时间后台运行的限制。发送页可暂停和继续。'),
+                  ),
+                ),
+              ],
+              const SizedBox(height: 24),
+              Text('存储与缓存', style: Theme.of(context).textTheme.titleMedium),
+              const SizedBox(height: 8),
+              Card(
+                child: ListTile(
+                  leading: const Icon(Icons.delete_sweep_outlined),
+                  title: const Text('清理临时缓存'),
+                  subtitle: Text(_cacheMessage ?? '仅清理临时文件，不会删除已导入书籍、设置或发送进度。'),
+                  trailing: _isClearingCache
+                      ? const SizedBox(
+                          width: 22,
+                          height: 22,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.chevron_right),
+                  onTap: _isClearingCache ? null : _clearCache,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class SegmentPreviewPage extends StatefulWidget {
+  const SegmentPreviewPage({
+    required this.chunks,
+    required this.maxCharacters,
+    super.key,
+  });
+
+  final List<String> chunks;
+  final int maxCharacters;
+
+  @override
+  State<SegmentPreviewPage> createState() => _SegmentPreviewPageState();
+}
+
+class _SegmentPreviewPageState extends State<SegmentPreviewPage> {
+  late List<String> _chunks;
+  bool _wasAdjusted = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _chunks = List<String>.of(widget.chunks);
+  }
+
+  Future<void> _openBatchAdjuster() async {
+    final adjusted = await Navigator.of(context).push<List<String>>(
+      MaterialPageRoute(
+        builder: (_) => BatchSegmentAdjustPage(
+          chunks: _chunks,
+          initialMaxCharacters: widget.maxCharacters,
+        ),
+      ),
+    );
+    if (adjusted == null || !mounted) {
+      return;
+    }
+    setState(() {
+      _chunks = adjusted;
+      _wasAdjusted = true;
+    });
+  }
+
+  void _finish() {
+    Navigator.of(context).pop(_wasAdjusted ? _chunks : null);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return PopScope<List<String>>(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) {
+        if (!didPop) {
+          _finish();
+        }
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          leading: IconButton(
+            tooltip: '返回',
+            onPressed: _finish,
+            icon: const Icon(Icons.arrow_back),
+          ),
+          title: const Text('完整分段预览'),
+          actions: [
+            IconButton(
+              tooltip: '批量调整指定段落',
+              onPressed: _openBatchAdjuster,
+              icon: const Icon(Icons.tune_outlined),
+            ),
+            TextButton(onPressed: _finish, child: const Text('完成')),
+          ],
+        ),
+        body: SafeArea(
+          child: ListView.builder(
+            padding: const EdgeInsets.all(16),
+            itemCount: _chunks.length + 1,
+            itemBuilder: (context, index) {
+              if (index == 0) {
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 12),
+                  child: Card(
+                    color: Theme.of(context).colorScheme.secondaryContainer,
+                    child: Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            '共 ${_chunks.length} 段；下方内容与通知 body 一致，未做省略或摘要。',
+                          ),
+                          const SizedBox(height: 8),
+                          const Text('点击右上角调节图标，可对任意起止段落统一重新按指定字数切分。'),
+                        ],
+                      ),
+                    ),
+                  ),
+                );
+              }
+              final chunk = _chunks[index - 1];
+              return Card(
+                margin: const EdgeInsets.only(bottom: 12),
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        '通知片段 $index/${_chunks.length} · ${chunk.runes.length} 字',
+                        style: Theme.of(context).textTheme.labelLarge,
+                      ),
+                      const Divider(height: 24),
+                      SelectableText(chunk),
+                    ],
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class BatchSegmentAdjustPage extends StatefulWidget {
+  const BatchSegmentAdjustPage({
+    required this.chunks,
+    required this.initialMaxCharacters,
+    super.key,
+  });
+
+  final List<String> chunks;
+  final int initialMaxCharacters;
+
+  @override
+  State<BatchSegmentAdjustPage> createState() => _BatchSegmentAdjustPageState();
+}
+
+class _BatchSegmentAdjustPageState extends State<BatchSegmentAdjustPage> {
+  late final TextEditingController _startController;
+  late final TextEditingController _endController;
+  late final TextEditingController _limitController;
+
+  @override
+  void initState() {
+    super.initState();
+    _startController = TextEditingController(text: '1');
+    _endController = TextEditingController(
+      text: widget.chunks.length.toString(),
+    );
+    _limitController = TextEditingController(
+      text: widget.initialMaxCharacters.toString(),
+    );
+  }
+
+  @override
+  void dispose() {
+    _startController.dispose();
+    _endController.dispose();
+    _limitController.dispose();
+    super.dispose();
+  }
+
+  int get _start => (int.tryParse(_startController.text) ?? 1)
+      .clamp(1, widget.chunks.length)
+      .toInt();
+  int get _end => (int.tryParse(_endController.text) ?? widget.chunks.length)
+      .clamp(_start, widget.chunks.length)
+      .toInt();
+  int get _limit =>
+      (int.tryParse(_limitController.text) ?? widget.initialMaxCharacters)
+          .clamp(20, 1000)
+          .toInt();
+
+  void _apply() {
+    final adjusted = SegmentBatchAdjuster.adjust(
+      widget.chunks,
+      startSegment: _start,
+      endSegment: _end,
+      maxCharacters: _limit,
+    );
+    Navigator.of(context).pop(adjusted);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('批量调整段落字数')),
+      body: SafeArea(
+        child: ListView(
+          padding: const EdgeInsets.all(16),
+          children: [
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Text(
+                  '选择要重新切分的段落区间。只会重排该区间文字，区间外的原有分段保持不变。将起止段落设为 1–${widget.chunks.length} 可一次统一调整全部段落。',
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _startController,
+                    keyboardType: TextInputType.number,
+                    inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                    decoration: const InputDecoration(
+                      labelText: '起始段落（从 1 开始）',
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: TextField(
+                    controller: _endController,
+                    keyboardType: TextInputType.number,
+                    inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                    decoration: const InputDecoration(labelText: '结束段落'),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: _limitController,
+              keyboardType: TextInputType.number,
+              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+              decoration: const InputDecoration(
+                labelText: '该区间每段最大字符数',
+                helperText: '支持 20–1000；可用于单段（起止相同）或多段批量设置。',
+              ),
+            ),
+            const SizedBox(height: 16),
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Text('将重排第 $_start 至第 $_end 段，采用 $_limit 字/段。'),
+              ),
+            ),
+            const SizedBox(height: 16),
+            FilledButton.icon(
+              onPressed: _apply,
+              style: FilledButton.styleFrom(
+                minimumSize: const Size.fromHeight(52),
+              ),
+              icon: const Icon(Icons.auto_fix_high_outlined),
+              label: const Text('应用批量调整'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class SegmentBatchAdjuster {
+  const SegmentBatchAdjuster._();
+
+  static List<String> adjust(
+    List<String> chunks, {
+    required int startSegment,
+    required int endSegment,
+    required int maxCharacters,
+  }) {
+    if (chunks.isEmpty) {
+      return const [];
+    }
+    final start = startSegment.clamp(1, chunks.length).toInt() - 1;
+    final end = endSegment.clamp(start + 1, chunks.length).toInt() - 1;
+    final selectedText = chunks.sublist(start, end + 1).join();
+    final adjusted = NovelTextSplitter.split(
+      selectedText,
+      maxCharacters: maxCharacters.clamp(20, 1000).toInt(),
+    );
+    return [...chunks.take(start), ...adjusted, ...chunks.skip(end + 1)];
+  }
+}
+
+class SendingTaskPage extends StatefulWidget {
+  const SendingTaskPage({
+    required this.chunks,
+    required this.config,
+    required this.initialIndex,
+    required this.notificationBaseId,
+    this.startImmediately = false,
+    super.key,
+  });
+
+  final List<String> chunks;
+  final SendingConfig config;
+  final int initialIndex;
+  final int notificationBaseId;
+  final bool startImmediately;
+
+  @override
+  State<SendingTaskPage> createState() => _SendingTaskPageState();
+}
+
+class _SendingTaskPageState extends State<SendingTaskPage> {
+  bool _isRunning = false;
+  bool _isFinished = false;
+  bool _cancelForeground = false;
+  late int _sent;
+  String _status = '准备开始…';
+
+  @override
+  void initState() {
+    super.initState();
+    _sent = widget.initialIndex.clamp(0, widget.chunks.length).toInt();
+    FlutterForegroundTask.addTaskDataCallback(_onBackgroundData);
+    _status = _sent >= widget.chunks.length
+        ? '全部段落已发送完成。'
+        : '准备从第 ${_sent + 1}/${widget.chunks.length} 段发送。';
+    _isFinished = _sent >= widget.chunks.length;
+    if (widget.startImmediately && !_isFinished) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _start());
+    }
+  }
+
+  @override
+  void dispose() {
+    FlutterForegroundTask.removeTaskDataCallback(_onBackgroundData);
+    super.dispose();
+  }
+
+  void _onBackgroundData(Object data) {
+    if (data is! Map) {
+      return;
+    }
+    final type = data['type'];
+    if (type == 'progress') {
+      final sent = data['sent'];
+      if (sent is int && mounted) {
+        setState(() {
+          _sent = sent;
+          _status = '后台模式正在发送 $_sent/${widget.chunks.length} 段…';
+        });
+        unawaited(LocalAppStore.instance.updateSendingProgress(sent));
+      }
+    } else if (type == 'complete' && mounted) {
+      setState(() {
+        _sent = widget.chunks.length;
+        _isRunning = false;
+        _isFinished = true;
+        _status = '全部 ${widget.chunks.length} 段已发送完成。';
+      });
+      unawaited(LocalAppStore.instance.clearSendingSession());
+    } else if (type == 'stopped' && mounted && !_isFinished) {
+      setState(() {
+        _isRunning = false;
+        _status = '后台发送任务已停止。';
+      });
+    }
+  }
+
+  Future<void> _start() async {
+    try {
+      final granted = await NotificationService.instance.requestPermission();
+      if (!granted) {
+        if (!mounted) {
+          return;
+        }
+        setState(() => _status = '未取得通知权限，无法开始。');
+        return;
+      }
+
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _cancelForeground = false;
+        _isRunning = true;
+        _status = widget.config.mode == SendingMode.foreground
+            ? '前台模式正在发送 $_sent/${widget.chunks.length} 段…'
+            : '正在启动后台发送服务…';
+      });
+
+      if (widget.config.mode == SendingMode.foreground) {
+        await _runForeground();
+      } else {
+        await _runBackground();
+      }
+    } catch (error) {
+      if (mounted) {
+        setState(() {
+          _isRunning = false;
+          _status = '通知发送失败：$error。请检查系统通知权限后重试。';
+        });
+      }
+    }
+  }
+
+  Future<void> _runForeground() async {
+    for (var index = _sent; index < widget.chunks.length; index++) {
+      if (_cancelForeground) {
+        break;
+      }
+      await NotificationService.instance.showChunk(
+        id: widget.notificationBaseId + index,
+        index: index,
+        total: widget.chunks.length,
+        text: widget.chunks[index],
+      );
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _sent = index + 1;
+        _status = '前台模式正在发送 $_sent/${widget.chunks.length} 段…';
+      });
+      await LocalAppStore.instance.updateSendingProgress(_sent);
+      if (index < widget.chunks.length - 1 && !_cancelForeground) {
+        await Future<void>.delayed(
+          Duration(milliseconds: widget.config.intervalMilliseconds),
+        );
+      }
+    }
+
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _isRunning = false;
+      _isFinished = !_cancelForeground;
+      _status = _cancelForeground
+          ? '前台发送任务已在 $_sent/${widget.chunks.length} 段后停止。'
+          : '全部 ${widget.chunks.length} 段已发送完成。';
+    });
+    if (!_cancelForeground) {
+      await LocalAppStore.instance.clearSendingSession();
+    }
+  }
+
+  Future<void> _runBackground() async {
+    try {
+      await BackgroundNovelSender.start(
+        chunks: widget.chunks,
+        intervalMilliseconds: widget.config.intervalMilliseconds,
+        startIndex: _sent,
+        notificationBaseId: widget.notificationBaseId,
+      );
+      if (mounted) {
+        setState(() => _status = '后台服务已启动，正在等待第一段通知。');
+      }
+    } catch (error) {
+      if (mounted) {
+        setState(() {
+          _isRunning = false;
+          _status = '后台服务启动失败：$error';
+        });
+      }
+    }
+  }
+
+  Future<void> _pause() async {
+    if (widget.config.mode == SendingMode.foreground) {
+      setState(() {
+        _cancelForeground = true;
+        _status = '已请求暂停；当前等待结束后将保留进度。';
+      });
+      return;
+    }
+
+    await BackgroundNovelSender.stop();
+    if (mounted) {
+      setState(() {
+        _isRunning = false;
+        _status = '后台发送已暂停，进度已保存。';
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final progress =
+        (widget.chunks.isEmpty ? 0.0 : _sent / widget.chunks.length)
+            .clamp(0.0, 1.0)
+            .toDouble();
+    return PopScope(
+      canPop: !_isRunning,
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('发送任务'),
+          automaticallyImplyLeading: !_isRunning,
+        ),
+        body: SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          widget.config.mode.title,
+                          style: Theme.of(context).textTheme.titleMedium,
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          '每 ${widget.config.intervalMilliseconds} ms 发送一段；总计 ${widget.chunks.length} 段。',
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                Card(
+                  color: Theme.of(context).colorScheme.primaryContainer,
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Row(
+                          children: [
+                            const Icon(Icons.timeline_outlined),
+                            const SizedBox(width: 8),
+                            Text(
+                              '发送进度',
+                              style: Theme.of(context).textTheme.titleMedium,
+                            ),
+                            const Spacer(),
+                            Text(
+                              '${(progress * 100).toStringAsFixed(2)}%',
+                              style: Theme.of(context).textTheme.titleMedium,
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 14),
+                        Semantics(
+                          label:
+                              '发送进度 ${(progress * 100).toStringAsFixed(2)}%，已发送 $_sent，共 ${widget.chunks.length} 段',
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(8),
+                            child: LinearProgressIndicator(
+                              value: progress,
+                              minHeight: 14,
+                              color: Theme.of(context).colorScheme.primary,
+                              backgroundColor: Theme.of(context)
+                                  .colorScheme
+                                  .surfaceContainerHighest,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text('已发送 $_sent 段'),
+                            Text('剩余 ${widget.chunks.length - _sent} 段'),
+                          ],
+                        ),
+                        const Divider(height: 24),
+                        Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Icon(
+                              _isFinished
+                                  ? Icons.check_circle_outline
+                                  : _isRunning
+                                  ? Icons.sync_outlined
+                                  : Icons.pause_circle_outline,
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(child: Text(_status)),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                const Spacer(),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        onPressed: _isRunning || _isFinished || _sent > 0
+                            ? null
+                            : _start,
+                        icon: const Icon(Icons.send_outlined),
+                        label: const Text('发送'),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: FilledButton.icon(
+                        onPressed: _isFinished
+                            ? null
+                            : (_isRunning ? _pause : _start),
+                        style: FilledButton.styleFrom(
+                          backgroundColor: _isRunning
+                              ? Theme.of(context).colorScheme.error
+                              : Theme.of(context).colorScheme.secondary,
+                          foregroundColor: _isRunning
+                              ? Theme.of(context).colorScheme.onError
+                              : Theme.of(context).colorScheme.onSecondary,
+                        ),
+                        icon: Icon(
+                          _isRunning
+                              ? Icons.pause_circle_outline
+                              : Icons.play_circle_outline,
+                        ),
+                        label: Text(_isRunning ? '暂停' : '继续'),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class NotificationService {
+  NotificationService._();
+
+  static final instance = NotificationService._();
+  static const MethodChannel _systemNotificationChannel = MethodChannel(
+    'com.ritualcollapse.wristnovel/notifications',
+  );
+
+  final FlutterLocalNotificationsPlugin _plugin =
+      FlutterLocalNotificationsPlugin();
+  Future<void>? _initializing;
+  bool _initialized = false;
+
+  static const _channel = AndroidNotificationChannel(
+    _notificationChannelId,
+    _notificationChannelName,
+    description: _notificationChannelDescription,
+    importance: Importance.defaultImportance,
+  );
+
+  Future<void> initialize() {
+    if (_initialized) {
+      return Future.value();
+    }
+    return _initializing ??= initializePlugin(_plugin).then((_) {
+      _initialized = true;
+    });
+  }
+
+  static Future<void> initializePlugin(
+    FlutterLocalNotificationsPlugin plugin,
+  ) async {
+    const settings = InitializationSettings(
+      android: AndroidInitializationSettings('app_icon'),
+    );
+    await plugin.initialize(settings: settings);
+    final androidPlugin = plugin
+        .resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin
+        >();
+    await androidPlugin?.createNotificationChannel(_channel);
+  }
+
+  Future<bool> requestPermission() async {
+    await initialize();
+    try {
+      final granted = await _systemNotificationChannel.invokeMethod<bool>(
+        'requestPermission',
+      );
+      if (granted != null) {
+        return granted;
+      }
+    } on PlatformException {
+      // 原生桥接不可用时，继续使用通知插件的兼容实现。
+    } on MissingPluginException {
+      // 单元测试或非 Android 平台中没有原生桥接，使用兼容实现。
+    }
+
+    final androidPlugin = _plugin
+        .resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin
+        >();
+    if (androidPlugin == null) {
+      return false;
+    }
+    final wasEnabled = await androidPlugin.areNotificationsEnabled();
+    if (wasEnabled ?? false) {
+      return true;
+    }
+    final granted = await androidPlugin.requestNotificationsPermission();
+    return granted ?? await androidPlugin.areNotificationsEnabled() ?? false;
+  }
+
+  Future<bool> areNotificationsEnabled() async {
+    try {
+      final enabled = await _systemNotificationChannel.invokeMethod<bool>(
+        'areNotificationsEnabled',
+      );
+      if (enabled != null) {
+        return enabled;
+      }
+    } on PlatformException {
+      // 使用下方插件实现作为兼容回退。
+    } on MissingPluginException {
+      // 使用下方插件实现作为兼容回退。
+    }
+    await initialize();
+    final androidPlugin = _plugin
+        .resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin
+        >();
+    return await androidPlugin?.areNotificationsEnabled() ?? false;
+  }
+
+  Future<void> openNotificationSettings() async {
+    try {
+      await _systemNotificationChannel.invokeMethod<bool>(
+        'openNotificationSettings',
+      );
+    } on PlatformException {
+      throw const FormatException('无法打开系统通知设置，请在系统设置中手动开启本应用通知。');
+    } on MissingPluginException {
+      throw const FormatException('当前设备不支持直接打开系统通知设置。');
+    }
+  }
+
+  static int createBaseId(int chunkCount) {
+    final maximumBaseId = 2000000000 - chunkCount - 1;
+    return DateTime.now().millisecondsSinceEpoch.remainder(
+      math.max(1, maximumBaseId).toInt(),
+    );
+  }
+
+  Future<void> showChunk({
+    required int id,
+    required int index,
+    required int total,
+    required String text,
+  }) async {
+    await initialize();
+    await showChunkWithPlugin(
+      _plugin,
+      id: id,
+      index: index,
+      total: total,
+      text: text,
+    );
+  }
+
+  static Future<void> showChunkWithPlugin(
+    FlutterLocalNotificationsPlugin plugin, {
+    required int id,
+    required int index,
+    required int total,
+    required String text,
+  }) {
+    final details = NotificationDetails(
+      android: AndroidNotificationDetails(
+        _notificationChannelId,
+        _notificationChannelName,
+        channelDescription: _notificationChannelDescription,
+        importance: Importance.defaultImportance,
+        priority: Priority.defaultPriority,
+        groupKey: _notificationGroupKey,
+        styleInformation: BigTextStyleInformation(text),
+      ),
+    );
+    return plugin.show(
+      id: id,
+      title: '小说片段 ${index + 1}/$total',
+      body: text,
+      notificationDetails: details,
+      payload: 'chunk:${index + 1}',
+    );
+  }
+}
+
+class BackgroundNovelSender {
+  BackgroundNovelSender._();
+
+  static const _serviceId = 4160;
+  static const _chunksKey = 'novel_chunks_json';
+  static const _nextIndexKey = 'novel_next_index';
+  static const _notificationBaseIdKey = 'novel_notification_base_id';
+
+  static void initialize() {
+    _configure(intervalMilliseconds: 1000);
+  }
+
+  static void _configure({required int intervalMilliseconds}) {
+    FlutterForegroundTask.init(
+      androidNotificationOptions: AndroidNotificationOptions(
+        channelId: 'novel_background_sender',
+        channelName: '小说后台发送',
+        channelDescription: '小说片段正在按设定频率发送。',
+        channelImportance: NotificationChannelImportance.LOW,
+        priority: NotificationPriority.LOW,
+        onlyAlertOnce: true,
+      ),
+      iosNotificationOptions: const IOSNotificationOptions(
+        showNotification: false,
+        playSound: false,
+      ),
+      foregroundTaskOptions: ForegroundTaskOptions(
+        eventAction: ForegroundTaskEventAction.repeat(intervalMilliseconds),
+        autoRunOnBoot: false,
+        autoRunOnMyPackageReplaced: false,
+        allowWakeLock: true,
+        allowWifiLock: false,
+        stopWithTask: false,
+      ),
+    );
+  }
+
+  static Future<void> start({
+    required List<String> chunks,
+    required int intervalMilliseconds,
+    required int startIndex,
+    required int notificationBaseId,
+  }) async {
+    if (chunks.isEmpty) {
+      throw ArgumentError('没有可发送的小说分段。');
+    }
+    if (await FlutterForegroundTask.isRunningService) {
+      await FlutterForegroundTask.stopService();
+    }
+
+    _configure(
+      intervalMilliseconds: intervalMilliseconds.clamp(100, 3600000).toInt(),
+    );
+    await FlutterForegroundTask.saveData(
+      key: _chunksKey,
+      value: jsonEncode(chunks),
+    );
+    await FlutterForegroundTask.saveData(
+      key: _nextIndexKey,
+      value: startIndex.clamp(0, chunks.length).toInt(),
+    );
+    await FlutterForegroundTask.saveData(
+      key: _notificationBaseIdKey,
+      value: notificationBaseId,
+    );
+
+    final result = await FlutterForegroundTask.startService(
+      serviceId: _serviceId,
+      serviceTypes: const [ForegroundServiceTypes.dataSync],
+      notificationTitle: '小说后台发送中',
+      notificationText:
+          '准备从第 ${startIndex.clamp(0, chunks.length) + 1}/${chunks.length} 段发送',
+      notificationButtons: const [NotificationButton(id: 'stop', text: '停止')],
+      callback: backgroundNovelTaskStartCallback,
+    );
+    if (result is ServiceRequestFailure) {
+      throw result.error;
+    }
+  }
+
+  static Future<void> stop() async {
+    if (await FlutterForegroundTask.isRunningService) {
+      await FlutterForegroundTask.stopService();
+    }
+  }
+}
+
+@pragma('vm:entry-point')
+void backgroundNovelTaskStartCallback() {
+  FlutterForegroundTask.setTaskHandler(BackgroundNovelTaskHandler());
+}
+
+class BackgroundNovelTaskHandler extends TaskHandler {
+  final FlutterLocalNotificationsPlugin _notifications =
+      FlutterLocalNotificationsPlugin();
+  bool _isReady = false;
+  bool _isComplete = false;
+
+  @override
+  Future<void> onStart(DateTime timestamp, TaskStarter starter) async {
+    DartPluginRegistrant.ensureInitialized();
+    await NotificationService.initializePlugin(_notifications);
+    _isReady = true;
+    FlutterForegroundTask.sendDataToMain({'type': 'started'});
+  }
+
+  @override
+  void onRepeatEvent(DateTime timestamp) {
+    unawaited(_sendNext());
+  }
+
+  Future<void> _sendNext() async {
+    if (!_isReady || _isComplete) {
+      return;
+    }
+
+    final chunksJson = await FlutterForegroundTask.getData<String>(
+      key: BackgroundNovelSender._chunksKey,
+    );
+    final nextIndex = await FlutterForegroundTask.getData<int>(
+      key: BackgroundNovelSender._nextIndexKey,
+    );
+    final baseId = await FlutterForegroundTask.getData<int>(
+      key: BackgroundNovelSender._notificationBaseIdKey,
+    );
+    if (chunksJson == null || nextIndex == null || baseId == null) {
+      await _finish(stopped: true);
+      return;
+    }
+
+    final decoded = jsonDecode(chunksJson);
+    if (decoded is! List) {
+      await _finish(stopped: true);
+      return;
+    }
+    final chunks = decoded
+        .map((item) => item.toString())
+        .toList(growable: false);
+    if (nextIndex >= chunks.length) {
+      await _finish();
+      return;
+    }
+
+    final text = chunks[nextIndex];
+    await NotificationService.showChunkWithPlugin(
+      _notifications,
+      id: baseId + nextIndex,
+      index: nextIndex,
+      total: chunks.length,
+      text: text,
+    );
+    final sent = nextIndex + 1;
+    await FlutterForegroundTask.saveData(
+      key: BackgroundNovelSender._nextIndexKey,
+      value: sent,
+    );
+    await LocalAppStore.instance.updateSendingProgress(sent);
+    await FlutterForegroundTask.updateService(
+      notificationTitle: '小说后台发送中',
+      notificationText: '已发送 $sent/${chunks.length} 段',
+    );
+    FlutterForegroundTask.sendDataToMain({'type': 'progress', 'sent': sent});
+
+    if (sent >= chunks.length) {
+      await _finish();
+    }
+  }
+
+  Future<void> _finish({bool stopped = false}) async {
+    if (_isComplete) {
+      return;
+    }
+    _isComplete = true;
+    FlutterForegroundTask.sendDataToMain({
+      'type': stopped ? 'stopped' : 'complete',
+    });
+    if (!stopped) {
+      await LocalAppStore.instance.clearSendingSession();
+    }
+    await FlutterForegroundTask.stopService();
+  }
+
+  @override
+  Future<void> onDestroy(DateTime timestamp, bool isTimeout) async {
+    if (!_isComplete) {
+      FlutterForegroundTask.sendDataToMain({'type': 'stopped'});
+    }
+  }
+
+  @override
+  void onNotificationButtonPressed(String id) {
+    if (id == 'stop') {
+      unawaited(_finish(stopped: true));
+    }
+  }
+}
+
+class NovelTextFileDecoder {
+  const NovelTextFileDecoder._();
+
+  static String decode(Uint8List bytes) {
+    if (bytes.length >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE) {
+      return _decodeUtf16(
+        bytes.sublist(2),
+        littleEndian: true,
+      ).replaceFirst('\uFEFF', '');
+    }
+    if (bytes.length >= 2 && bytes[0] == 0xFE && bytes[1] == 0xFF) {
+      return _decodeUtf16(
+        bytes.sublist(2),
+        littleEndian: false,
+      ).replaceFirst('\uFEFF', '');
+    }
+    return utf8.decode(bytes, allowMalformed: true).replaceFirst('\uFEFF', '');
+  }
+
+  static String _decodeUtf16(Uint8List bytes, {required bool littleEndian}) {
+    final units = <int>[];
+    for (var index = 0; index + 1 < bytes.length; index += 2) {
+      final value = littleEndian
+          ? bytes[index] | (bytes[index + 1] << 8)
+          : (bytes[index] << 8) | bytes[index + 1];
+      units.add(value);
+    }
+    return String.fromCharCodes(units);
+  }
+}
+
+class NovelTextSplitter {
+  const NovelTextSplitter._();
+
+  /// 按 Unicode 代码点计数，保证每个分片不超过 [maxCharacters]。
+  /// 优先在段落、句末标点和空白处切分，避免把汉语句子生硬截断。
+  static List<String> split(String source, {required int maxCharacters}) {
+    if (maxCharacters <= 0) {
+      throw ArgumentError.value(maxCharacters, 'maxCharacters', '必须大于 0。');
+    }
+    final normalized = source
+        .replaceAll('\r\n', '\n')
+        .replaceAll('\r', '\n')
+        .trim();
+    if (normalized.isEmpty) {
+      return const [];
+    }
+
+    final runes = normalized.runes.toList();
+    final result = <String>[];
+    var start = 0;
+
+    while (start < runes.length) {
+      var end = math.min(start + maxCharacters, runes.length);
+      if (end < runes.length) {
+        final preferredBreak = _findPreferredBreak(runes, start, end);
+        if (preferredBreak != null) {
+          end = preferredBreak;
+        }
+      }
+
+      final chunk = String.fromCharCodes(runes.sublist(start, end));
+      if (chunk.trim().isNotEmpty) {
+        result.add(chunk);
+      }
+      start = end;
+    }
+    return result;
+  }
+
+  static int? _findPreferredBreak(List<int> runes, int start, int end) {
+    // 过早断句会产生很多非常短的通知，因此仅在分片后半段寻找断点。
+    final minimumBreak = start + ((end - start) * 0.5).floor();
+    const preferredBreaks = <int>{
+      0x0A, // \n
+      0x3002, // 。
+      0xFF01, // ！
+      0xFF1F, // ？
+      0xFF1B, // ；
+      0x0021, // !
+      0x003F, // ?
+      0x003B, // ;
+    };
+    const secondaryBreaks = <int>{
+      0x3001, // 、
+      0xFF0C, // ，
+      0x002C, // ,
+      0x0020, // space
+      0x09, // tab
+    };
+
+    for (var index = end - 1; index >= minimumBreak; index--) {
+      if (preferredBreaks.contains(runes[index])) {
+        return index + 1;
+      }
+    }
+    for (var index = end - 1; index >= minimumBreak; index--) {
+      if (secondaryBreaks.contains(runes[index])) {
+        return index + 1;
+      }
+    }
+    return null;
+  }
+}
