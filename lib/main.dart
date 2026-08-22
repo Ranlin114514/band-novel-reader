@@ -1791,6 +1791,7 @@ class WearableManagerOption {
     required this.appName,
     required this.icon,
     required this.recommendedMaxCharacters,
+    this.logoAssetPath,
     this.canLaunchManager = true,
   });
 
@@ -1799,6 +1800,7 @@ class WearableManagerOption {
   final String appName;
   final IconData icon;
   final int recommendedMaxCharacters;
+  final String? logoAssetPath;
   final bool canLaunchManager;
 }
 
@@ -1833,6 +1835,7 @@ class _OnboardingPageState extends State<OnboardingPage> {
       appName: 'Mi Fitness / Zepp Life',
       icon: Icons.watch_outlined,
       recommendedMaxCharacters: 160,
+      logoAssetPath: 'assets/images/brand_logos/xiaomi_logo.png',
     ),
     WearableManagerOption(
       id: 'huawei',
@@ -1840,6 +1843,7 @@ class _OnboardingPageState extends State<OnboardingPage> {
       appName: '华为运动健康',
       icon: Icons.favorite_outline,
       recommendedMaxCharacters: 80,
+      logoAssetPath: 'assets/images/brand_logos/huawei_logo.png',
     ),
     WearableManagerOption(
       id: 'honor',
@@ -1847,6 +1851,7 @@ class _OnboardingPageState extends State<OnboardingPage> {
       appName: '荣耀运动健康',
       icon: Icons.health_and_safety_outlined,
       recommendedMaxCharacters: 80,
+      logoAssetPath: 'assets/images/brand_logos/honor_logo.png',
     ),
     WearableManagerOption(
       id: 'oppo',
@@ -1854,6 +1859,7 @@ class _OnboardingPageState extends State<OnboardingPage> {
       appName: 'OHealth',
       icon: Icons.directions_run_outlined,
       recommendedMaxCharacters: 100,
+      logoAssetPath: 'assets/images/brand_logos/oppo_logo.png',
     ),
     WearableManagerOption(
       id: 'vivo',
@@ -1861,6 +1867,7 @@ class _OnboardingPageState extends State<OnboardingPage> {
       appName: 'Origin Health',
       icon: Icons.monitor_heart_outlined,
       recommendedMaxCharacters: 100,
+      logoAssetPath: 'assets/images/brand_logos/vivo_logo.png',
     ),
     WearableManagerOption(
       id: 'other',
@@ -2187,7 +2194,21 @@ class _OnboardingPageState extends State<OnboardingPage> {
                     alignment: WrapAlignment.center,
                     children: _wearableManagerOptions.map((option) {
                       return ChoiceChip(
-                        avatar: Icon(option.icon, size: 18),
+                        avatar: option.logoAssetPath == null
+                            ? Icon(option.icon, size: 18)
+                            : Container(
+                                width: 28,
+                                height: 28,
+                                padding: const EdgeInsets.all(4),
+                                decoration: BoxDecoration(
+                                  color: Colors.white,
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                child: Image.asset(
+                                  option.logoAssetPath!,
+                                  fit: BoxFit.contain,
+                                ),
+                              ),
                         label: AnimatedScale(
                           duration: const Duration(milliseconds: 220),
                           curve: Curves.easeOutBack,
@@ -2195,7 +2216,7 @@ class _OnboardingPageState extends State<OnboardingPage> {
                               ? 1.04
                               : 1,
                           child: Text(
-                            '${option.brandName} ${option.recommendedMaxCharacters}字',
+                            '${option.brandName}\n${option.recommendedMaxCharacters} 字预设',
                           ),
                         ),
                         selected: _selectedWearableManager?.id == option.id,
