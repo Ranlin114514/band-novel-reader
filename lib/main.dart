@@ -822,6 +822,8 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
   bool _isBackgroundRunning = false;
   bool _isLoading = true;
   String? _startupError;
+  String? _wearableBrandId;
+  String? _wearableBrandName;
   late final AppLifecycleListener _lifecycleListener;
 
   StoredLibraryBook? get _selectedBook {
@@ -920,6 +922,8 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
       );
       _session = session?.canResume == true ? session : null;
       _isBackgroundRunning = isRunning;
+      _wearableBrandId = document.wearablePresetBrandId;
+      _wearableBrandName = document.wearablePresetBrandName;
       _isLoading = false;
     });
     if (session?.canResume == true && !isRunning) {
@@ -1467,6 +1471,48 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
     _showMessage('已应用 ${result.maxCharacters} 字/段的手环品牌预设；已清除旧分段和断点。');
   }
 
+  Future<void> _openBrandPicker() async {
+    final selected = await Navigator.of(context).push<WearableManagerOption>(
+      MaterialPageRoute(
+        builder: (_) => BrandPickerPage(initialBrandId: _wearableBrandId),
+      ),
+    );
+    if (selected == null || !mounted) {
+      return;
+    }
+    await LocalAppStore.instance.saveWearablePreset(
+      enabled: true,
+      brandId: selected.id,
+      brandName: selected.brandName,
+      maxCharacters: selected.recommendedMaxCharacters,
+    );
+    await LocalAppStore.instance.clearSendingSession();
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _wearableBrandId = selected.id;
+      _wearableBrandName = selected.brandName;
+      _maxCharacters = selected.recommendedMaxCharacters;
+      _books = _books
+          .map(
+            (book) => StoredLibraryBook(
+              id: book.id,
+              text: book.text,
+              fileName: book.fileName,
+              customChunks: null,
+            ),
+          )
+          .toList(growable: false);
+      _session = null;
+      _isBackgroundRunning = false;
+    });
+    await _persistLibrary();
+    _showMessage(
+      '已切换为${selected.brandName}预设：${selected.recommendedMaxCharacters} 字/段；已清除旧分段和断点。',
+    );
+  }
+
   void _showMessage(String message) {
     if (!mounted) {
       return;
@@ -1538,6 +1584,13 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
       appBar: AppBar(
         title: const Text('我的书库'),
         actions: [
+          IconButton(
+            tooltip: _wearableBrandName == null
+                ? '选择手环品牌'
+                : '切换手环品牌：$_wearableBrandName',
+            onPressed: _openBrandPicker,
+            icon: BrandLogoIcon(brandId: _wearableBrandId, size: 24),
+          ),
           IconButton(
             tooltip: '选择图书',
             onPressed: _books.isEmpty ? null : _openLibrarySelector,
@@ -1802,6 +1855,80 @@ class WearableManagerOption {
   final int recommendedMaxCharacters;
   final String? logoAssetPath;
   final bool canLaunchManager;
+}
+
+class BrandLogoIcon extends StatelessWidget {
+  const BrandLogoIcon({required this.brandId, this.size = 28, super.key});
+
+  final String? brandId;
+  final double size;
+
+  @override
+  Widget build(BuildContext context) {
+    final options = _OnboardingPageState._wearableManagerOptions;
+    final option = options.where((item) => item.id == brandId).firstOrNull;
+    if (option?.logoAssetPath == null) {
+      return Icon(option?.icon ?? Icons.watch_outlined, size: size);
+    }
+    return Semantics(
+      label: '${option!.brandName}品牌标识',
+      child: SizedBox(
+        width: size,
+        height: size,
+        child: Image.asset(
+          option.logoAssetPath!,
+          fit: BoxFit.contain,
+          filterQuality: FilterQuality.high,
+        ),
+      ),
+    );
+  }
+}
+
+class BrandPickerPage extends StatelessWidget {
+  const BrandPickerPage({required this.initialBrandId, super.key});
+
+  final String? initialBrandId;
+
+  @override
+  Widget build(BuildContext context) {
+    final options = _OnboardingPageState._wearableManagerOptions;
+    return Scaffold(
+      appBar: AppBar(title: const Text('切换手环品牌')),
+      body: ListView.separated(
+        padding: const EdgeInsets.all(16),
+        itemCount: options.length,
+        separatorBuilder: (_, _) => const SizedBox(height: 10),
+        itemBuilder: (context, index) {
+          final option = options[index];
+          final selected = option.id == initialBrandId;
+          return Card(
+            color: selected
+                ? Theme.of(context).colorScheme.secondaryContainer
+                : null,
+            child: ListTile(
+              contentPadding: const EdgeInsets.symmetric(
+                horizontal: 16,
+                vertical: 8,
+              ),
+              leading: BrandLogoIcon(brandId: option.id, size: 38),
+              title: Text(option.brandName),
+              subtitle: Text(
+                '${option.appName} · ${option.recommendedMaxCharacters} 字/段预设',
+              ),
+              trailing: selected
+                  ? Icon(
+                      Icons.check_circle,
+                      color: Theme.of(context).colorScheme.primary,
+                    )
+                  : const Icon(Icons.chevron_right),
+              onTap: () => Navigator.of(context).pop(option),
+            ),
+          );
+        },
+      ),
+    );
+  }
 }
 
 class OnboardingResult {
@@ -2194,6 +2321,7 @@ class _OnboardingPageState extends State<OnboardingPage> {
                     alignment: WrapAlignment.center,
                     children: _wearableManagerOptions.map((option) {
                       return ChoiceChip(
+                        showCheckmark: false,
                         avatar: option.logoAssetPath == null
                             ? Icon(option.icon, size: 18)
                             : Container(
@@ -2977,7 +3105,7 @@ class _UnifiedSettingsPageState extends State<UnifiedSettingsPage> {
                       const Text('应用版本'),
                       const SizedBox(height: 2),
                       Text(
-                        '2.1Alpha（2.1.0-alpha.6+7）',
+                        '2.1（2.1.0+8）',
                         style: Theme.of(context).textTheme.bodyMedium,
                       ),
                       const SizedBox(height: 18),
@@ -3214,11 +3342,39 @@ class _SegmentPreviewPageState extends State<SegmentPreviewPage> {
                         right: 10,
                         child: Semantics(
                           label: '该通知片段已完成发送',
-                          child: Badge(
-                            backgroundColor: Theme.of(context)
-                                .colorScheme
-                                .primary,
-                            label: const Icon(Icons.check, size: 14),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 8,
+                              vertical: 4,
+                            ),
+                            decoration: ShapeDecoration(
+                              color: Theme.of(context)
+                                  .colorScheme
+                                  .secondaryContainer,
+                              shape: const StadiumBorder(),
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(
+                                  Icons.done_rounded,
+                                  size: 14,
+                                  color: Theme.of(context)
+                                      .colorScheme
+                                      .onSecondaryContainer,
+                                ),
+                                const SizedBox(width: 3),
+                                Text(
+                                  '已发送',
+                                  style: Theme.of(context).textTheme.labelSmall
+                                      ?.copyWith(
+                                        color: Theme.of(context)
+                                            .colorScheme
+                                            .onSecondaryContainer,
+                                      ),
+                                ),
+                              ],
+                            ),
                           ),
                         ),
                       ),
