@@ -2062,7 +2062,6 @@ class _OnboardingPageState extends State<OnboardingPage> {
       if (_donationSeconds <= 1) {
         setState(() => _donationSeconds = 0);
         timer.cancel();
-        unawaited(_next());
       } else {
         setState(() => _donationSeconds--);
       }
@@ -2249,16 +2248,42 @@ class _OnboardingPageState extends State<OnboardingPage> {
       ),
     ];
     if (_step == 4) {
+      final ready = _donationSeconds == 0;
       return PopScope(
         canPop: false,
         child: Scaffold(
-          body: SizedBox.expand(
-            child: ColoredBox(
-              color: Colors.white,
-              child: Image.asset(
-                'assets/images/donation_alipay.webp',
-                fit: BoxFit.contain,
-                filterQuality: FilterQuality.high,
+          body: SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(20, 20, 20, 24),
+              child: Column(
+                children: [
+                  Expanded(
+                    child: ColoredBox(
+                      color: Colors.white,
+                      child: SizedBox.expand(
+                        child: Image.asset(
+                          'assets/images/donation_alipay.webp',
+                          fit: BoxFit.contain,
+                          filterQuality: FilterQuality.high,
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    ready ? '感谢支持，你现在可以继续。' : '请稍候 $_donationSeconds 秒后继续',
+                    style: Theme.of(context).textTheme.labelLarge,
+                  ),
+                  const SizedBox(height: 12),
+                  SizedBox(
+                    width: double.infinity,
+                    child: FilledButton.icon(
+                      onPressed: ready ? _next : null,
+                      icon: const Icon(Icons.arrow_forward),
+                      label: Text(ready ? '下一步' : '下一步（$_donationSeconds 秒）'),
+                    ),
+                  ),
+                ],
               ),
             ),
           ),
