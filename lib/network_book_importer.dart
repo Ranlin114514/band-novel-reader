@@ -27,13 +27,16 @@ class NetworkBookImporter {
       throw const FormatException('请输入以 http:// 或 https:// 开头的 API 地址。');
     }
 
-    final headers = <String, String>{'Accept': 'text/plain, application/json'};
+    final headers = <String, String>{
+      'Accept': 'text/plain, text/*;q=0.9, application/json;q=0.5',
+      'User-Agent': 'BandNovelReader/2.2 (Android; public-domain import)',
+    };
     if (authorization != null && authorization.trim().isNotEmpty) {
       headers['Authorization'] = authorization.trim();
     }
     final response = await http
         .get(uri, headers: headers)
-        .timeout(const Duration(seconds: 20));
+        .timeout(const Duration(seconds: 30));
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw FormatException('接口返回 HTTP ${response.statusCode}。');
     }
@@ -107,6 +110,8 @@ class PublicDomainBookResult {
     required this.author,
     required this.language,
     required this.downloadCount,
+    required this.summary,
+    required this.subjects,
     required this.textUrl,
   });
 
@@ -115,6 +120,8 @@ class PublicDomainBookResult {
   final String author;
   final String language;
   final int downloadCount;
+  final String summary;
+  final List<String> subjects;
   final String textUrl;
 }
 
@@ -128,8 +135,14 @@ class PublicDomainBookCatalog {
     }
     final uri = Uri.https('gutendex.com', '/books', {'search': normalized});
     final response = await http
-        .get(uri, headers: const {'Accept': 'application/json'})
-        .timeout(const Duration(seconds: 15));
+        .get(
+          uri,
+          headers: const {
+            'Accept': 'application/json',
+            'User-Agent': 'BandNovelReader/2.2 (Android; public-domain search)',
+          },
+        )
+        .timeout(const Duration(seconds: 30));
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw FormatException('开源图书目录返回 HTTP ${response.statusCode}。');
     }
@@ -176,6 +189,8 @@ class PublicDomainBookCatalog {
           downloadCount: raw['download_count'] is int
               ? raw['download_count'] as int
               : 0,
+          summary: _readSummary(raw['summaries']),
+          subjects: _readStrings(raw['subjects']),
           textUrl: textUrl,
         ),
       );
@@ -189,6 +204,18 @@ class PublicDomainBookCatalog {
       titleFallback: book.title,
     );
   }
+
+  static String _readSummary(Object? value) {
+    final summaries = _readStrings(value);
+    return summaries.isEmpty ? '该目录未提供内容简介。' : summaries.join('\n\n');
+  }
+
+  static List<String> _readStrings(Object? value) => value is List
+      ? value
+            .whereType<String>()
+            .where((item) => item.trim().isNotEmpty)
+            .toList(growable: false)
+      : const [];
 
   static String? _readPlainTextUrl(Map formats) {
     const preferred = [

@@ -1,7 +1,7 @@
 # 手环通知小说 / Band Novel Reader
 
-> **中文**：一个将 TXT 小说按可控字数切分，并通过 Android 系统通知逐段推送到手机与手环的 Flutter 应用。  
-> **English**: A Flutter Android application that splits TXT novels into controllable segments and delivers each segment through Android notifications to a phone and its paired smart band/watch.
+> **中文**：一个采用 **Material Design 3** 界面设计系统、将图书正文按可控字数切分，并通过 Android 系统通知逐段推送到手机与手环的应用。
+> **English**: A **Material Design 3** Android application that splits book text into controllable segments and delivers each segment through Android notifications to a phone and its paired smart band/watch.
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![Platform: Android](https://img.shields.io/badge/Platform-Android-3DDC84.svg)](https://www.android.com/)
@@ -13,7 +13,7 @@
 
 **手环通知小说**适用于希望利用手环通知阅读短段文本的用户。它不会把整本小说压缩成一条摘要，而是将原始 TXT 正文按设定的字符数分段，把每一段**完整文本**以 Android 大文本通知形式送出。手机系统将通知镜像到已授权的手环后，用户便可在手环上查看对应段落。
 
-本项目是一个 Android 优先的 Flutter 应用，包名为 `com.ritualcollapse.wristnovel`。它支持本地 TXT 文件和网络 API 两种导入方式，维护多书库，允许用户预览和批量调整分段，并将书籍、设置及发送进度保存在设备本地。
+本项目是 Android 优先的应用，包名为 `com.ritualcollapse.wristnovel`。**Flutter 仅用于跨平台实现与 Android 原生能力桥接；全部可见界面遵循 Material Design 3 设计系统。** 它支持本地图书、网络 API 与公共领域开源目录导入，维护多书库，允许用户预览和批量调整分段，并将书籍、设置及发送进度保存在设备本地。
 
 > **重要提示**：手机端的 Android 通知权限与手环管理软件中的“应用通知／应用提醒／通知同步”是两层独立设置。即使手机已经允许本应用发送通知，也必须在手环配套管理软件中找到“手环通知小说”并开启通知镜像，手环才能收到内容。
 
@@ -21,8 +21,8 @@
 
 | 功能 | 说明 |
 | --- | --- |
-| 多书库 | 可导入并保存多本 TXT 图书；当前选中的图书决定预览、发送与断点续传内容。 |
-| 双入口导入 | 支持系统文件选择器导入本地 TXT，也支持 HTTP/HTTPS API 下载纯文本或 JSON 图书内容。 |
+| 多书库 | 可导入并保存多本图书；当前选中的图书决定预览、发送与断点续传内容。 |
+| 多入口导入 | 支持本地 TXT、TEXT、Markdown、LOG、JSON 文本和 EPUB；支持 HTTP/HTTPS API，也可搜索 Gutendex / Project Gutenberg 公共领域目录中的可下载纯文本图书。 |
 | 自动书名与简介 | 从文件名解析书名，并从正文生成本地简介，无需外部元数据服务。 |
 | 可控分段 | 统一每段最大字符数可设为 **20–1000**；可在预览页对指定连续区间重新分段。 |
 | 完整段落预览 | 每一段均可在应用内查看；发送的通知正文与预览段落保持一致。 |
@@ -35,9 +35,9 @@
 
 ### 实现原理
 
-#### 1. 从 TXT 或 API 到书库
+#### 1. 从图书来源到书库
 
-本地导入通过系统文件选择器读取 `.txt` 文件的字节数据，并对常见 UTF-8／UTF-16 编码进行解码。网络导入向用户提供的 HTTP/HTTPS 地址发起请求：接口既可以直接返回纯文本，也可以返回包含 `title`／`name` 与 `content`／`text`／`body` 字段的 JSON。导入的正文、文件名、个性化分段和当前选书状态由 `shared_preferences` 持久化。
+本地导入通过系统文件选择器读取 TXT、TEXT、Markdown、LOG、JSON 文本与 EPUB；纯文本采用常见 UTF-8／UTF-16 解码，EPUB 则提取章节正文。网络导入既可向用户提供的 HTTP/HTTPS 地址请求纯文本或 JSON，也可搜索 Gutendex / Project Gutenberg 的公共领域目录并下载可用纯文本。导入的正文、文件名、个性化分段和当前选书状态由 `shared_preferences` 持久化。
 
 #### 2. 分段和预览
 
@@ -116,7 +116,7 @@ build/app/outputs/flutter-apk/app-release.apk
 
 **Band Novel Reader** is designed for reading short pieces of novel text through smart-band notifications. Rather than reducing a chapter to a notification summary, it splits the original TXT content into configurable segments and sends the **complete text of each segment** as an Android big-text notification. Once the phone notification is mirrored by a paired wearable, the matching segment becomes visible on the band or watch.
 
-This is an Android-first Flutter app with package ID `com.ritualcollapse.wristnovel`. It supports local TXT import and network API import, keeps a multi-book library, offers segment preview and batch adjustment, and persists books, settings, and sending progress on-device.
+This is an Android-first application with package ID `com.ritualcollapse.wristnovel`. **Flutter is used only as the implementation framework and native Android bridge; Material Design 3 is the design system for every visible interface.** It supports local multi-format import, network API import, and public-domain catalogue search, keeps a multi-book library, offers segment preview and batch adjustment, and persists books, settings, and sending progress on-device.
 
 > **Important**: Android notification permission and the wearable companion app's app-notification/mirroring permission are separate layers. Allowing phone notifications alone is not sufficient; enable notification synchronization for **Band Novel Reader** in the companion app as well.
 
@@ -124,7 +124,7 @@ This is an Android-first Flutter app with package ID `com.ritualcollapse.wristno
 
 | Layer | Implementation |
 | --- | --- |
-| Ingestion | The app decodes local TXT files or downloads plain text / JSON from an HTTP(S) API. |
+| Ingestion | The app imports TXT, TEXT, Markdown, LOG, JSON text, and EPUB; it can also download plain text / JSON from an HTTP(S) API or search public-domain text records. |
 | Library | Book text, file names, custom segments, selected book, settings, and resumable sessions are persisted locally. |
 | Segmentation | Text is split in order with a configurable maximum of 20–1000 characters per segment, while preferring natural boundaries where possible. |
 | Notification delivery | Each completed segment is sent through Android's `novel_text_channel` using a big-text notification style and a stable per-segment notification ID. |

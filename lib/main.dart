@@ -961,9 +961,11 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
         intervalMilliseconds: document.intervalMilliseconds,
       );
       _sessionsByBook = sessionsByBook;
-      _session =
-          sessionsByBook[library.selectedBookId] ??
-          (session?.canResume == true ? session : null);
+      _session = _sessionForBook(
+        bookId: library.selectedBookId,
+        sessionsByBook: sessionsByBook,
+        legacySession: session,
+      );
       _isBackgroundRunning = isRunning;
       _wearableBrandId = document.wearablePresetBrandId;
       _wearableBrandName = document.wearablePresetBrandName;
@@ -1027,6 +1029,22 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
     );
   }
 
+  StoredSendingSession? _sessionForBook({
+    required String? bookId,
+    required Map<String, StoredSendingSession> sessionsByBook,
+    required StoredSendingSession? legacySession,
+  }) {
+    final mappedSession = bookId == null ? null : sessionsByBook[bookId];
+    if (mappedSession != null) {
+      return mappedSession;
+    }
+    if (legacySession?.canResume == true &&
+        (legacySession!.bookId == null || legacySession.bookId == bookId)) {
+      return legacySession;
+    }
+    return null;
+  }
+
   Future<void> _refreshSendingState() async {
     final session = await LocalAppStore.instance.loadSendingSession();
     final sessionsByBook = await LocalAppStore.instance.loadSendingSessions();
@@ -1034,9 +1052,11 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
     if (mounted) {
       setState(() {
         _sessionsByBook = sessionsByBook;
-        _session =
-            sessionsByBook[_selectedBookId] ??
-            (session?.canResume == true ? session : null);
+        _session = _sessionForBook(
+          bookId: _selectedBookId,
+          sessionsByBook: sessionsByBook,
+          legacySession: session,
+        );
         _isBackgroundRunning = running;
       });
     }
@@ -1083,26 +1103,36 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
   Future<void> _importBooks() async {
     try {
       final files = await FilePicker.pickFiles(
-        type: FileType.custom,
-        allowedExtensions: LocalBookImporter.supportedExtensions,
+        type: FileType.any,
       );
       if (files.isEmpty) {
         return;
       }
       final imported = <StoredLibraryBook>[];
+      final rejectedFiles = <String>[];
       for (final file in files) {
-        final decoded = await LocalBookImporter.decode(file);
-        imported.add(
-          StoredLibraryBook(
-            id: LocalAppStore.createBookId(file.name, decoded.text),
-            text: decoded.text,
-            fileName: file.name,
-            customChunks: null,
-          ),
-        );
+        try {
+          final decoded = await LocalBookImporter.decode(file);
+          imported.add(
+            StoredLibraryBook(
+              id: LocalAppStore.createBookId(file.name, decoded.text),
+              text: decoded.text,
+              fileName: file.name,
+              customChunks: null,
+            ),
+          );
+        } on FormatException {
+          rejectedFiles.add(file.name);
+        }
       }
       if (imported.isEmpty || !mounted) {
-        _showMessage('未找到可导入的文本图书。');
+        if (rejectedFiles.isNotEmpty) {
+          _showMessage(
+            '未导入任何图书：${rejectedFiles.join('、')} 格式不受支持。请重新选择 TXT、TEXT、Markdown、LOG、JSON 或 EPUB 图书文件。',
+          );
+        } else {
+          _showMessage('未找到可导入的文本图书。');
+        }
         return;
       }
       final byIdentity = <String, StoredLibraryBook>{
@@ -1117,7 +1147,10 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
         _selectedBookId = imported.last.id;
       });
       await _persistLibrary();
-      _showMessage('已导入 ${imported.length} 本图书，并选中最新导入的图书。');
+      final rejectedNotice = rejectedFiles.isEmpty
+          ? ''
+          : '；已跳过 ${rejectedFiles.length} 个不支持格式的文件，请重新选择 TXT、TEXT、Markdown、LOG、JSON 或 EPUB 图书文件。';
+      _showMessage('已导入 ${imported.length} 本图书，并选中最新导入的图书$rejectedNotice');
     } on PlatformException catch (error) {
       _showMessage('无法打开文件选择器：${error.message ?? error.code}');
     } on FormatException catch (error) {
@@ -1343,6 +1376,14 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
         ),
       );
       if (selected == null || !mounted) {
+        return;
+      }
+      final shouldDownload = await Navigator.of(context).push<bool>(
+        MaterialPageRoute(
+          builder: (_) => PublicDomainBookDetailPage(book: selected),
+        ),
+      );
+      if (shouldDownload != true || !mounted) {
         return;
       }
       _showMessage('正在下载《${selected.title}》…');
@@ -2794,10 +2835,7 @@ class _NovelEditorPageState extends State<NovelEditorPage> {
   Future<void> _importTxt() async {
     setState(() => _isImporting = true);
     try {
-      final file = await FilePicker.pickFile(
-        type: FileType.custom,
-        allowedExtensions: LocalBookImporter.supportedExtensions,
-      );
+      final file = await FilePicker.pickFile(type: FileType.any);
       if (file == null) {
         return;
       }
@@ -4575,6 +4613,82 @@ class BackgroundNovelTaskHandler extends TaskHandler {
   }
 }
 
+class PublicDomainBookDetailPage extends StatelessWidget {
+  const PublicDomainBookDetailPage({required this.book, super.key});
+
+  final PublicDomainBookResult book;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('开源图书详情')),
+      body: SafeArea(
+        child: ListView(
+          padding: const EdgeInsets.all(20),
+          children: [
+            Icon(
+              Icons.auto_stories_outlined,
+              size: 48,
+              color: Theme.of(context).colorScheme.primary,
+            ),
+            const SizedBox(height: 16),
+            Text(book.title, style: Theme.of(context).textTheme.headlineSmall),
+            const SizedBox(height: 8),
+            Text(book.author, style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(height: 20),
+            Card(
+              child: Column(
+                children: [
+                  ListTile(
+                    leading: const Icon(Icons.language_outlined),
+                    title: const Text('语言'),
+                    trailing: Text(book.language),
+                  ),
+                  const Divider(height: 1),
+                  ListTile(
+                    leading: const Icon(Icons.download_outlined),
+                    title: const Text('目录下载次数'),
+                    trailing: Text('${book.downloadCount}'),
+                  ),
+                  const Divider(height: 1),
+                  const ListTile(
+                    leading: Icon(Icons.verified_outlined),
+                    title: Text('来源'),
+                    subtitle: Text('Project Gutenberg 公共领域目录'),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 20),
+            Text('内容简介', style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(height: 8),
+            Text(book.summary),
+            if (book.subjects.isNotEmpty) ...[
+              const SizedBox(height: 20),
+              Text('主题', style: Theme.of(context).textTheme.titleMedium),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  for (final subject in book.subjects.take(8))
+                    Chip(label: Text(subject)),
+                ],
+              ),
+            ],
+            const SizedBox(height: 28),
+            FilledButton.icon(
+              onPressed: () => Navigator.of(context).pop(true),
+              icon: const Icon(Icons.download_outlined),
+              label: const Text('下载并导入纯文本图书'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class ImportedLocalBook {
   const ImportedLocalBook({required this.title, required this.text});
 
@@ -4599,6 +4713,12 @@ class LocalBookImporter {
     final bytes = await file.readAsBytes();
     final extension = _extensionOf(file.name);
     final fallbackTitle = _baseName(file.name);
+    if (!supportedExtensions.contains(extension)) {
+      final readableExtension = extension.isEmpty ? '无扩展名' : '.$extension';
+      throw FormatException(
+        '不支持 $readableExtension 格式。请重新选择 TXT、TEXT、Markdown、LOG、JSON 或 EPUB 图书文件。',
+      );
+    }
     if (extension == 'epub') {
       return _decodeEpub(bytes, fallbackTitle);
     }
