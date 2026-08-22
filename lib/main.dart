@@ -2029,6 +2029,7 @@ class _OnboardingPageState extends State<OnboardingPage> {
       if (_donationSeconds <= 1) {
         setState(() => _donationSeconds = 0);
         timer.cancel();
+        unawaited(_next());
       } else {
         setState(() => _donationSeconds--);
       }
@@ -2214,6 +2215,24 @@ class _OnboardingPageState extends State<OnboardingPage> {
         body: '小说、分段规则、发送模式和未完成的发送位置均保存在本机。发送中止或重启应用后，可从上一次进度继续。',
       ),
     ];
+    if (_step == 4) {
+      return PopScope(
+        canPop: false,
+        child: Scaffold(
+          body: SizedBox.expand(
+            child: ColoredBox(
+              color: Colors.white,
+              child: Image.asset(
+                'assets/images/donation_alipay.webp',
+                fit: BoxFit.contain,
+                filterQuality: FilterQuality.high,
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
     final page = pages[_step];
     final isLast = _step == pages.length - 1;
 
