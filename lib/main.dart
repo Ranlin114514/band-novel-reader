@@ -2377,15 +2377,30 @@ class _OnboardingPageState extends State<OnboardingPage> {
                 if (_step == 3) ...[
                   const SizedBox(height: 18),
                   Expanded(
-                    child: AnimatedScale(
-                      duration: const Duration(milliseconds: 360),
-                      curve: Curves.easeOutBack,
-                      scale: _donationSeconds == 0 ? 1 : 0.96,
-                      child: ClipRRect(
-                        borderRadius: BorderRadius.circular(18),
-                        child: Image.asset(
-                          'assets/images/donation_alipay.webp',
-                          fit: BoxFit.contain,
+                    child: LayoutBuilder(
+                      builder: (context, constraints) => Center(
+                        child: AnimatedScale(
+                          duration: const Duration(milliseconds: 360),
+                          curve: Curves.easeOutBack,
+                          scale: _donationSeconds == 0 ? 1 : 0.96,
+                          child: ConstrainedBox(
+                            constraints: BoxConstraints(
+                              maxWidth: math.min(380, constraints.maxWidth),
+                              maxHeight: constraints.maxHeight,
+                            ),
+                            child: ClipRRect(
+                              borderRadius: BorderRadius.circular(18),
+                              child: SizedBox(
+                                width: double.infinity,
+                                height: double.infinity,
+                                child: Image.asset(
+                                  'assets/images/donation_alipay.webp',
+                                  fit: BoxFit.contain,
+                                  filterQuality: FilterQuality.high,
+                                ),
+                              ),
+                            ),
+                          ),
                         ),
                       ),
                     ),
