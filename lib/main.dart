@@ -243,12 +243,20 @@ class _NovelHomePageState extends State<NovelHomePage> {
     if (!mounted) {
       return;
     }
-    await Navigator.of(context).push<void>(
+    final result = await Navigator.of(context).push<OnboardingResult>(
       MaterialPageRoute(
         fullscreenDialog: true,
         builder: (_) => const OnboardingPage(),
       ),
     );
+    if (result == null || !mounted) {
+      return;
+    }
+    setState(() {
+      _maxCharacters = result.maxCharacters;
+      _customChunks = null;
+    });
+    await _persistDocument();
   }
 
   Future<void> _openPreview() async {
@@ -1115,14 +1123,35 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
   }
 
   Future<void> _openOnboarding() async {
-    if (mounted) {
-      await Navigator.of(context).push<void>(
-        MaterialPageRoute(
-          fullscreenDialog: true,
-          builder: (_) => const OnboardingPage(),
-        ),
-      );
+    if (!mounted) {
+      return;
     }
+    final result = await Navigator.of(context).push<OnboardingResult>(
+      MaterialPageRoute(
+        fullscreenDialog: true,
+        builder: (_) => const OnboardingPage(),
+      ),
+    );
+    if (result == null || !mounted) {
+      return;
+    }
+    setState(() {
+      _maxCharacters = result.maxCharacters;
+      _books = _books
+          .map(
+            (book) => StoredLibraryBook(
+              id: book.id,
+              text: book.text,
+              fileName: book.fileName,
+              customChunks: null,
+            ),
+          )
+          .toList(growable: false);
+      _session = null;
+    });
+    await LocalAppStore.instance.clearSendingSession();
+    await _persistLibrary();
+    _showMessage('已应用 ${result.maxCharacters} 字/段的手环品牌预设；已清除旧分段和断点。');
   }
 
   void _showMessage(String message) {
@@ -1456,12 +1485,22 @@ class WearableManagerOption {
     required this.brandName,
     required this.appName,
     required this.icon,
+    required this.recommendedMaxCharacters,
+    this.canLaunchManager = true,
   });
 
   final String id;
   final String brandName;
   final String appName;
   final IconData icon;
+  final int recommendedMaxCharacters;
+  final bool canLaunchManager;
+}
+
+class OnboardingResult {
+  const OnboardingResult({required this.maxCharacters});
+
+  final int maxCharacters;
 }
 
 class OnboardingPage extends StatefulWidget {
@@ -1486,30 +1525,43 @@ class _OnboardingPageState extends State<OnboardingPage> {
       brandName: '小米',
       appName: 'Mi Fitness / Zepp Life',
       icon: Icons.watch_outlined,
+      recommendedMaxCharacters: 160,
     ),
     WearableManagerOption(
       id: 'huawei',
       brandName: '华为',
       appName: '华为运动健康',
       icon: Icons.favorite_outline,
+      recommendedMaxCharacters: 80,
     ),
     WearableManagerOption(
       id: 'honor',
       brandName: '荣耀',
       appName: '荣耀运动健康',
       icon: Icons.health_and_safety_outlined,
+      recommendedMaxCharacters: 80,
     ),
     WearableManagerOption(
       id: 'oppo',
       brandName: 'OPPO',
       appName: 'OHealth',
       icon: Icons.directions_run_outlined,
+      recommendedMaxCharacters: 100,
     ),
     WearableManagerOption(
       id: 'vivo',
       brandName: 'vivo',
       appName: 'Origin Health',
       icon: Icons.monitor_heart_outlined,
+      recommendedMaxCharacters: 100,
+    ),
+    WearableManagerOption(
+      id: 'other',
+      brandName: '其他品牌',
+      appName: '你的手环管理软件',
+      icon: Icons.devices_other_outlined,
+      recommendedMaxCharacters: 60,
+      canLaunchManager: false,
     ),
   ];
 
@@ -1558,15 +1610,35 @@ class _OnboardingPageState extends State<OnboardingPage> {
     }
   }
 
-  Future<void> _launchWearableManager(WearableManagerOption option) async {
+  Future<void> _selectWearableManager(WearableManagerOption option) async {
     if (_openingWearableManager) {
       return;
     }
     setState(() {
       _selectedWearableManager = option;
-      _openingWearableManager = true;
       _wearableManagerMessage = null;
     });
+    final document = await LocalAppStore.instance.loadDocument();
+    await LocalAppStore.instance.saveSettings(
+      maxCharacters: option.recommendedMaxCharacters,
+      modeIndex: document.modeIndex,
+      intervalMilliseconds: document.intervalMilliseconds,
+    );
+    if (!mounted) {
+      return;
+    }
+    if (!option.canLaunchManager) {
+      setState(() {
+        _wearableManagerMessage =
+            '已应用通用保守预设：${option.recommendedMaxCharacters} 字/段。请手动打开你的手环管理软件，并开启“手环通知小说”的通知同步；之后可在统一设置中调整字数。';
+      });
+      return;
+    }
+    await _launchWearableManager(option);
+  }
+
+  Future<void> _launchWearableManager(WearableManagerOption option) async {
+    setState(() => _openingWearableManager = true);
     try {
       final result = await NotificationService.instance.launchWearableManager(
         option.id,
@@ -1577,8 +1649,8 @@ class _OnboardingPageState extends State<OnboardingPage> {
       final status = result['status'];
       setState(() {
         _wearableManagerMessage = status == 'launched'
-            ? '已打开 ${option.appName}。请在其中找到“设备 / 通知 / 应用通知”，开启“手环通知小说”的通知同步；完成后返回本应用。'
-            : '未检测到已安装的 ${option.appName}，已尝试打开应用商店。安装后请在管理软件内开启“手环通知小说”的通知同步。';
+            ? '已应用 ${option.recommendedMaxCharacters} 字/段预设，并打开 ${option.appName}。请在其中找到“设备 / 通知 / 应用通知”，开启“手环通知小说”的通知同步；完成后返回本应用。'
+            : '已应用 ${option.recommendedMaxCharacters} 字/段预设。未检测到已安装的 ${option.appName}，已尝试打开应用商店；安装后请在管理软件内开启“手环通知小说”的通知同步。';
       });
     } on FormatException catch (error) {
       if (mounted) {
@@ -1620,9 +1692,16 @@ class _OnboardingPageState extends State<OnboardingPage> {
       await _requestNotifications();
       return;
     }
+    final selected = _selectedWearableManager;
+    if (selected == null) {
+      setState(() => _step = 2);
+      return;
+    }
     await LocalAppStore.instance.markOnboardingCompleted();
     if (mounted) {
-      Navigator.of(context).pop();
+      Navigator.of(
+        context,
+      ).pop(OnboardingResult(maxCharacters: selected.recommendedMaxCharacters));
     }
   }
 
@@ -1643,7 +1722,7 @@ class _OnboardingPageState extends State<OnboardingPage> {
       (
         icon: Icons.watch_outlined,
         title: '选择手环管理软件',
-        body: '选择你的手环品牌后，应用会自动打开相应的管理软件。请在其中开启“手环通知小说”的应用通知同步或镜像。',
+        body: '选择你的手环品牌后，应用会自动应用保守的单段字数预设，并打开相应的管理软件。请在其中开启“手环通知小说”的应用通知同步或镜像。',
       ),
       (
         icon: Icons.save_outlined,
@@ -1753,7 +1832,7 @@ class _OnboardingPageState extends State<OnboardingPage> {
                 if (_step == 2) ...[
                   const SizedBox(height: 18),
                   Text(
-                    '选择品牌后会自动打开对应的手环管理软件：',
+                    '选择品牌后会自动应用保守预设，并打开对应管理软件：',
                     style: Theme.of(context).textTheme.titleSmall,
                   ),
                   const SizedBox(height: 10),
@@ -1764,11 +1843,13 @@ class _OnboardingPageState extends State<OnboardingPage> {
                     children: _wearableManagerOptions.map((option) {
                       return ChoiceChip(
                         avatar: Icon(option.icon, size: 18),
-                        label: Text(option.brandName),
+                        label: Text(
+                          '${option.brandName} ${option.recommendedMaxCharacters}字',
+                        ),
                         selected: _selectedWearableManager?.id == option.id,
                         onSelected: _openingWearableManager
                             ? null
-                            : (_) => unawaited(_launchWearableManager(option)),
+                            : (_) => unawaited(_selectWearableManager(option)),
                       );
                     }).toList(),
                   ),
@@ -1787,7 +1868,7 @@ class _OnboardingPageState extends State<OnboardingPage> {
                     )
                   else
                     Text(
-                      '未安装时将尝试打开应用商店；如无法打开，请手动安装对应管理软件。',
+                      '未安装时将尝试打开应用商店；“其他品牌”会应用 60 字通用预设，请手动打开其管理软件。',
                       textAlign: TextAlign.center,
                       style: Theme.of(context).textTheme.bodySmall,
                     ),
@@ -2204,7 +2285,7 @@ class _UnifiedSettingsPageState extends State<UnifiedSettingsPage> {
                       const Text('应用版本'),
                       const SizedBox(height: 2),
                       Text(
-                        '2.1Alpha（2.1.0-alpha.1+2）',
+                        '2.1Alpha（2.1.0-alpha.2+3）',
                         style: Theme.of(context).textTheme.bodyMedium,
                       ),
                       const SizedBox(height: 14),
