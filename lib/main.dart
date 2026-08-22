@@ -2022,7 +2022,7 @@ class _OnboardingPageState extends State<OnboardingPage> {
     _donationTimer?.cancel();
     setState(() => _donationSeconds = 5);
     _donationTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      if (!mounted || _step != 3) {
+      if (!mounted || _step != 4) {
         timer.cancel();
         return;
       }
@@ -2149,10 +2149,10 @@ class _OnboardingPageState extends State<OnboardingPage> {
     if (_step == 2 && _selectedWearableManager == null) {
       return;
     }
-    if (_step < 4) {
+    if (_step < 5) {
       final nextStep = _step + 1;
       setState(() => _step = nextStep);
-      if (nextStep == 3) {
+      if (nextStep == 4) {
         _startDonationCountdown();
       }
       return;
@@ -2201,7 +2201,12 @@ class _OnboardingPageState extends State<OnboardingPage> {
       (
         icon: Icons.volunteer_activism_outlined,
         title: '支持项目继续前行',
-        body: '捐献我们，让我们走的更远。感谢每一份支持。',
+        body: '捐献我们，让我们走的更远。下一页将展示收款二维码，感谢每一份支持。',
+      ),
+      (
+        icon: Icons.qr_code_scanner_outlined,
+        title: '扫码支持',
+        body: '请使用支付宝扫描下方二维码。二维码展示期间将等待 5 秒后才可继续。',
       ),
       (
         icon: Icons.save_outlined,
@@ -2374,7 +2379,7 @@ class _OnboardingPageState extends State<OnboardingPage> {
                       style: Theme.of(context).textTheme.bodySmall,
                     ),
                 ],
-                if (_step == 3) ...[
+                if (_step == 4) ...[
                   const SizedBox(height: 18),
                   Expanded(
                     child: LayoutBuilder(
@@ -2431,14 +2436,14 @@ class _OnboardingPageState extends State<OnboardingPage> {
                           (_step == 1 && _notificationGranted != true) ||
                               (_step == 2 &&
                                   _selectedWearableManager == null) ||
-                              (_step == 3 && _donationSeconds > 0)
+                              (_step == 4 && _donationSeconds > 0)
                           ? null
                           : _next,
                       icon: Icon(
                         isLast ? Icons.check_outlined : Icons.arrow_forward,
                       ),
                       label: Text(
-                        _step == 3 && _donationSeconds > 0
+                        _step == 4 && _donationSeconds > 0
                             ? '下一步（$_donationSeconds 秒）'
                             : (isLast ? '完成' : '下一步'),
                       ),
