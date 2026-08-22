@@ -10,6 +10,10 @@ class StoredNovelDocument {
     required this.modeIndex,
     required this.intervalMilliseconds,
     required this.customChunks,
+    required this.wearablePresetEnabled,
+    required this.wearablePresetBrandId,
+    required this.wearablePresetBrandName,
+    required this.wearablePresetMaxCharacters,
   });
 
   final String text;
@@ -18,6 +22,10 @@ class StoredNovelDocument {
   final int modeIndex;
   final int intervalMilliseconds;
   final List<String>? customChunks;
+  final bool wearablePresetEnabled;
+  final String? wearablePresetBrandId;
+  final String? wearablePresetBrandName;
+  final int? wearablePresetMaxCharacters;
 }
 
 class StoredLibraryBook {
@@ -94,6 +102,13 @@ class LocalAppStore {
   static const _textKey = 'novel_text';
   static const _fileNameKey = 'novel_file_name';
   static const _maxCharactersKey = 'novel_max_characters';
+  static const _wearablePresetEnabledKey = 'wearable_preset_enabled';
+  static const _wearablePresetBrandIdKey = 'wearable_preset_brand_id';
+  static const _wearablePresetBrandNameKey = 'wearable_preset_brand_name';
+  static const _wearablePresetMaxCharactersKey =
+      'wearable_preset_max_characters';
+  static const _themePreferenceKey = 'app_theme_preference';
+  static const _startupScreenEnabledKey = 'startup_screen_enabled';
   static const _modeIndexKey = 'sending_mode_index';
   static const _intervalMillisecondsKey = 'sending_interval_milliseconds';
   static const _legacyIntervalSecondsKey = 'sending_interval_seconds';
@@ -124,6 +139,16 @@ class LocalAppStore {
         _legacyIntervalSecondsKey,
       ),
       customChunks: _decodeChunks(preferences.getString(_customChunksKey)),
+      wearablePresetEnabled:
+          preferences.getBool(_wearablePresetEnabledKey) ?? false,
+      wearablePresetBrandId: preferences.getString(_wearablePresetBrandIdKey),
+      wearablePresetBrandName: preferences.getString(
+        _wearablePresetBrandNameKey,
+      ),
+      wearablePresetMaxCharacters: preferences
+          .getInt(_wearablePresetMaxCharactersKey)
+          ?.clamp(20, 1000)
+          .toInt(),
     );
   }
 
@@ -222,6 +247,57 @@ class LocalAppStore {
       modeIndex: modeIndex,
       intervalMilliseconds: intervalMilliseconds,
     );
+  }
+
+  Future<void> saveWearablePreset({
+    required bool enabled,
+    required String? brandId,
+    required String? brandName,
+    required int? maxCharacters,
+  }) async {
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.setBool(_wearablePresetEnabledKey, enabled);
+    if (brandId == null || brandId.isEmpty) {
+      await preferences.remove(_wearablePresetBrandIdKey);
+    } else {
+      await preferences.setString(_wearablePresetBrandIdKey, brandId);
+    }
+    if (brandName == null || brandName.isEmpty) {
+      await preferences.remove(_wearablePresetBrandNameKey);
+    } else {
+      await preferences.setString(_wearablePresetBrandNameKey, brandName);
+    }
+    if (maxCharacters == null) {
+      await preferences.remove(_wearablePresetMaxCharactersKey);
+    } else {
+      await preferences.setInt(
+        _wearablePresetMaxCharactersKey,
+        maxCharacters.clamp(20, 1000).toInt(),
+      );
+    }
+  }
+
+  Future<int> loadThemePreference() async {
+    final preferences = await SharedPreferences.getInstance();
+    return (preferences.getInt(_themePreferenceKey) ?? 0).clamp(0, 2).toInt();
+  }
+
+  Future<void> saveThemePreference(int preferenceIndex) async {
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.setInt(
+      _themePreferenceKey,
+      preferenceIndex.clamp(0, 2).toInt(),
+    );
+  }
+
+  Future<bool> isStartupScreenEnabled() async {
+    final preferences = await SharedPreferences.getInstance();
+    return preferences.getBool(_startupScreenEnabledKey) ?? true;
+  }
+
+  Future<void> saveStartupScreenEnabled(bool enabled) async {
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.setBool(_startupScreenEnabledKey, enabled);
   }
 
   Future<void> _saveSettings(

@@ -8,6 +8,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:http/http.dart' as http;
+import 'package:url_launcher/url_launcher.dart';
 
 import 'book_metadata.dart';
 import 'cache_cleaner.dart';
@@ -26,7 +28,60 @@ Future<void> main() async {
   } catch (_) {
     // 后台服务在实际启动时会再次初始化；启动阶段不阻塞主界面呈现。
   }
-  runApp(const NovelNotifierApp());
+  await AppThemeController.instance.load();
+  final startupScreenEnabled = await LocalAppStore.instance
+      .isStartupScreenEnabled();
+  runApp(
+    NovelNotifierApp(
+      themeController: AppThemeController.instance,
+      startupScreenEnabled: startupScreenEnabled,
+    ),
+  );
+}
+
+enum AppThemePreference { system, light, dark }
+
+extension AppThemePreferenceLabel on AppThemePreference {
+  String get title => switch (this) {
+    AppThemePreference.system => '跟随系统',
+    AppThemePreference.light => '浅色',
+    AppThemePreference.dark => '深色',
+  };
+
+  IconData get icon => switch (this) {
+    AppThemePreference.system => Icons.brightness_auto_outlined,
+    AppThemePreference.light => Icons.light_mode_outlined,
+    AppThemePreference.dark => Icons.dark_mode_outlined,
+  };
+}
+
+class AppThemeController extends ChangeNotifier {
+  AppThemeController._();
+
+  static final instance = AppThemeController._();
+  AppThemePreference _preference = AppThemePreference.system;
+
+  AppThemePreference get preference => _preference;
+
+  ThemeMode get themeMode => switch (_preference) {
+    AppThemePreference.system => ThemeMode.system,
+    AppThemePreference.light => ThemeMode.light,
+    AppThemePreference.dark => ThemeMode.dark,
+  };
+
+  Future<void> load() async {
+    final index = await LocalAppStore.instance.loadThemePreference();
+    _preference = AppThemePreference.values[index.clamp(0, 2)];
+  }
+
+  Future<void> setPreference(AppThemePreference preference) async {
+    if (_preference == preference) {
+      return;
+    }
+    _preference = preference;
+    notifyListeners();
+    await LocalAppStore.instance.saveThemePreference(preference.index);
+  }
 }
 
 enum SendingMode { foreground, background }
@@ -88,25 +143,207 @@ class NetworkImportRequest {
 }
 
 class NovelNotifierApp extends StatelessWidget {
-  const NovelNotifierApp({super.key});
+  const NovelNotifierApp({
+    required this.themeController,
+    required this.startupScreenEnabled,
+    super.key,
+  });
+
+  final AppThemeController themeController;
+  final bool startupScreenEnabled;
+
+  ThemeData _buildTheme(Brightness brightness) {
+    return ThemeData(
+      colorScheme: ColorScheme.fromSeed(
+        seedColor: const Color(0xFF0B6B69),
+        brightness: brightness,
+      ),
+      useMaterial3: true,
+      cardTheme: CardThemeData(
+        clipBehavior: Clip.antiAlias,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      ),
+      inputDecorationTheme: InputDecorationTheme(
+        border: OutlineInputBorder(borderRadius: BorderRadius.circular(16)),
+        enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(16),
+        ),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(16),
+        ),
+        alignLabelWithHint: true,
+      ),
+      filledButtonTheme: FilledButtonThemeData(
+        style: FilledButton.styleFrom(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
+        ),
+      ),
+      outlinedButtonTheme: OutlinedButtonThemeData(
+        style: OutlinedButton.styleFrom(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
+        ),
+      ),
+      textButtonTheme: TextButtonThemeData(
+        style: TextButton.styleFrom(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(14),
+          ),
+        ),
+      ),
+      dialogTheme: DialogThemeData(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+      ),
+      bottomSheetTheme: BottomSheetThemeData(
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+        ),
+      ),
+      snackBarTheme: SnackBarThemeData(
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: '小说通知阅读器',
-      debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF0B6B69),
-          brightness: Brightness.light,
+    return AnimatedBuilder(
+      animation: themeController,
+      builder: (context, _) {
+        return MaterialApp(
+          title: '小说通知阅读器',
+          debugShowCheckedModeBanner: false,
+          themeMode: themeController.themeMode,
+          theme: _buildTheme(Brightness.light),
+          darkTheme: _buildTheme(Brightness.dark),
+          themeAnimationDuration: const Duration(milliseconds: 360),
+          themeAnimationCurve: Curves.easeOutCubic,
+          home: startupScreenEnabled
+              ? const StartupQuotePage()
+              : const LibraryHomePage(),
+        );
+      },
+    );
+  }
+}
+
+class StartupQuotePage extends StatefulWidget {
+  const StartupQuotePage({super.key});
+
+  @override
+  State<StartupQuotePage> createState() => _StartupQuotePageState();
+}
+
+class _StartupQuotePageState extends State<StartupQuotePage> {
+  static const _fallbackQuote = '愿你出走半生，归来仍是少年。';
+  String _quote = _fallbackQuote;
+  String _source = '本地文案';
+  bool _visible = false;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_loadQuoteThenEnter());
+  }
+
+  Future<void> _loadQuoteThenEnter() async {
+    try {
+      final response = await http
+          .get(
+            Uri.parse('https://v1.hitokoto.cn/?c=i&encode=json'),
+            headers: const {'Accept': 'application/json'},
+          )
+          .timeout(const Duration(seconds: 2));
+      if (response.statusCode == 200) {
+        final decoded = jsonDecode(response.body);
+        if (decoded is Map && decoded['hitokoto'] is String) {
+          final text = (decoded['hitokoto'] as String).trim();
+          final from = decoded['from'];
+          final fromWho = decoded['from_who'];
+          if (text.isNotEmpty && mounted) {
+            final pieces = <String>[
+              if (fromWho is String && fromWho.trim().isNotEmpty)
+                fromWho.trim(),
+              if (from is String && from.trim().isNotEmpty) from.trim(),
+            ];
+            setState(() {
+              _quote = text;
+              _source = pieces.isEmpty ? '一言' : pieces.join(' · ');
+            });
+          }
+        }
+      }
+    } catch (_) {
+      // 网络不可用、接口超时或格式异常时保留本地文案，不阻塞启动。
+    }
+    if (!mounted) {
+      return;
+    }
+    setState(() => _visible = true);
+    await Future<void>.delayed(const Duration(milliseconds: 1600));
+    if (mounted) {
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute(builder: (_) => const LibraryHomePage()),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: DecoratedBox(
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [
+              Theme.of(context).colorScheme.primaryContainer,
+              Theme.of(context).colorScheme.surface,
+            ],
+          ),
         ),
-        useMaterial3: true,
-        inputDecorationTheme: const InputDecorationTheme(
-          border: OutlineInputBorder(),
-          alignLabelWithHint: true,
+        child: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(32),
+            child: TweenAnimationBuilder<double>(
+              duration: const Duration(milliseconds: 520),
+              curve: Curves.easeOutBack,
+              tween: Tween(begin: 0.94, end: _visible ? 1 : 0.94),
+              builder: (context, scale, child) => Opacity(
+                opacity: _visible ? 1 : 0,
+                child: Transform.scale(scale: scale, child: child),
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    Icons.auto_stories_outlined,
+                    size: 42,
+                    color: Theme.of(context).colorScheme.primary,
+                  ),
+                  const SizedBox(height: 24),
+                  Text(
+                    '“$_quote”',
+                    textAlign: TextAlign.center,
+                    style: Theme.of(context).textTheme.headlineSmall,
+                  ),
+                  const SizedBox(height: 14),
+                  Text(_source, style: Theme.of(context).textTheme.bodyMedium),
+                  const SizedBox(height: 28),
+                  Text(
+                    '正在进入手环通知小说…',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ],
+              ),
+            ),
+          ),
         ),
       ),
-      home: const LibraryHomePage(),
     );
   }
 }
@@ -1518,6 +1755,8 @@ class _OnboardingPageState extends State<OnboardingPage> {
   WearableManagerOption? _selectedWearableManager;
   bool _openingWearableManager = false;
   String? _wearableManagerMessage;
+  Timer? _donationTimer;
+  int _donationSeconds = 5;
 
   static const _wearableManagerOptions = <WearableManagerOption>[
     WearableManagerOption(
@@ -1569,6 +1808,29 @@ class _OnboardingPageState extends State<OnboardingPage> {
   void initState() {
     super.initState();
     unawaited(_readNotificationStatus());
+  }
+
+  @override
+  void dispose() {
+    _donationTimer?.cancel();
+    super.dispose();
+  }
+
+  void _startDonationCountdown() {
+    _donationTimer?.cancel();
+    setState(() => _donationSeconds = 5);
+    _donationTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (!mounted || _step != 3) {
+        timer.cancel();
+        return;
+      }
+      if (_donationSeconds <= 1) {
+        setState(() => _donationSeconds = 0);
+        timer.cancel();
+      } else {
+        setState(() => _donationSeconds--);
+      }
+    });
   }
 
   Future<void> _readNotificationStatus() async {
@@ -1623,6 +1885,12 @@ class _OnboardingPageState extends State<OnboardingPage> {
       maxCharacters: option.recommendedMaxCharacters,
       modeIndex: document.modeIndex,
       intervalMilliseconds: document.intervalMilliseconds,
+    );
+    await LocalAppStore.instance.saveWearablePreset(
+      enabled: true,
+      brandId: option.id,
+      brandName: option.brandName,
+      maxCharacters: option.recommendedMaxCharacters,
     );
     if (!mounted) {
       return;
@@ -1679,8 +1947,12 @@ class _OnboardingPageState extends State<OnboardingPage> {
     if (_step == 2 && _selectedWearableManager == null) {
       return;
     }
-    if (_step < 3) {
-      setState(() => _step++);
+    if (_step < 4) {
+      final nextStep = _step + 1;
+      setState(() => _step = nextStep);
+      if (nextStep == 3) {
+        _startDonationCountdown();
+      }
       return;
     }
     await _finish();
@@ -1723,6 +1995,11 @@ class _OnboardingPageState extends State<OnboardingPage> {
         icon: Icons.watch_outlined,
         title: '选择手环管理软件',
         body: '选择你的手环品牌后，应用会自动应用保守的单段字数预设，并打开相应的管理软件。请在其中开启“手环通知小说”的应用通知同步或镜像。',
+      ),
+      (
+        icon: Icons.volunteer_activism_outlined,
+        title: '支持项目继续前行',
+        body: '捐献我们，让我们走得更远。感谢每一份支持。',
       ),
       (
         icon: Icons.save_outlined,
@@ -1843,8 +2120,15 @@ class _OnboardingPageState extends State<OnboardingPage> {
                     children: _wearableManagerOptions.map((option) {
                       return ChoiceChip(
                         avatar: Icon(option.icon, size: 18),
-                        label: Text(
-                          '${option.brandName} ${option.recommendedMaxCharacters}字',
+                        label: AnimatedScale(
+                          duration: const Duration(milliseconds: 220),
+                          curve: Curves.easeOutBack,
+                          scale: _selectedWearableManager?.id == option.id
+                              ? 1.04
+                              : 1,
+                          child: Text(
+                            '${option.brandName} ${option.recommendedMaxCharacters}字',
+                          ),
                         ),
                         selected: _selectedWearableManager?.id == option.id,
                         onSelected: _openingWearableManager
@@ -1873,30 +2157,111 @@ class _OnboardingPageState extends State<OnboardingPage> {
                       style: Theme.of(context).textTheme.bodySmall,
                     ),
                 ],
+                if (_step == 3) ...[
+                  const SizedBox(height: 18),
+                  Expanded(
+                    child: AnimatedScale(
+                      duration: const Duration(milliseconds: 360),
+                      curve: Curves.easeOutBack,
+                      scale: _donationSeconds == 0 ? 1 : 0.96,
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(18),
+                        child: Image.asset(
+                          'assets/images/donation_alipay.webp',
+                          fit: BoxFit.contain,
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    _donationSeconds == 0
+                        ? '感谢支持，你现在可以继续。'
+                        : '请稍候 $_donationSeconds 秒后继续',
+                    textAlign: TextAlign.center,
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ],
                 const Spacer(),
                 Row(
                   children: [
                     if (_step > 0)
                       TextButton(
-                        onPressed: () => setState(() => _step--),
+                        onPressed: () {
+                          _donationTimer?.cancel();
+                          setState(() => _step--);
+                        },
                         child: const Text('上一步'),
                       ),
                     const Spacer(),
                     FilledButton.icon(
                       onPressed:
                           (_step == 1 && _notificationGranted != true) ||
-                              (_step == 2 && _selectedWearableManager == null)
+                              (_step == 2 &&
+                                  _selectedWearableManager == null) ||
+                              (_step == 3 && _donationSeconds > 0)
                           ? null
                           : _next,
                       icon: Icon(
                         isLast ? Icons.check_outlined : Icons.arrow_forward,
                       ),
-                      label: Text(isLast ? '完成' : '下一步'),
+                      label: Text(
+                        _step == 3 && _donationSeconds > 0
+                            ? '下一步（$_donationSeconds 秒）'
+                            : (isLast ? '完成' : '下一步'),
+                      ),
                     ),
                   ],
                 ),
               ],
             ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class DonationImagePage extends StatelessWidget {
+  const DonationImagePage({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('捐献支持')),
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            children: [
+              Text(
+                '捐献我们，让我们走得更远',
+                style: Theme.of(context).textTheme.titleLarge,
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 8),
+              Text(
+                '感谢你的支持。请使用支付宝扫一扫图片中的二维码。',
+                style: Theme.of(context).textTheme.bodySmall,
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 20),
+              Expanded(
+                child: InteractiveViewer(
+                  minScale: 0.8,
+                  maxScale: 3,
+                  child: Center(
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(20),
+                      child: Image.asset(
+                        'assets/images/donation_alipay.webp',
+                        fit: BoxFit.contain,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
           ),
         ),
       ),
@@ -2067,6 +2432,12 @@ class _UnifiedSettingsPageState extends State<UnifiedSettingsPage> {
   String? _cacheMessage;
   String? _autoSaveMessage;
   bool _isClearingCache = false;
+  bool _presetLoaded = false;
+  bool _useWearablePreset = false;
+  String? _wearablePresetBrandId;
+  String? _wearablePresetBrandName;
+  int? _wearablePresetMaxCharacters;
+  bool _startupScreenEnabled = true;
 
   @override
   void initState() {
@@ -2080,6 +2451,8 @@ class _UnifiedSettingsPageState extends State<UnifiedSettingsPage> {
     );
     _intervalController.addListener(_onSettingChanged);
     _maxCharactersController.addListener(_onSettingChanged);
+    unawaited(_loadWearablePreset());
+    unawaited(_loadStartupScreenSetting());
   }
 
   @override
@@ -2095,9 +2468,68 @@ class _UnifiedSettingsPageState extends State<UnifiedSettingsPage> {
     return entered.clamp(minimum, 3600000).toInt();
   }
 
-  int get _maxCharacters {
+  int get _manualMaxCharacters {
     final entered = int.tryParse(_maxCharactersController.text.trim()) ?? 120;
     return entered.clamp(20, 1000).toInt();
+  }
+
+  int get _maxCharacters =>
+      _useWearablePreset && _wearablePresetMaxCharacters != null
+      ? _wearablePresetMaxCharacters!
+      : _manualMaxCharacters;
+
+  Future<void> _loadWearablePreset() async {
+    final document = await LocalAppStore.instance.loadDocument();
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _useWearablePreset =
+          document.wearablePresetEnabled &&
+          document.wearablePresetMaxCharacters != null;
+      _wearablePresetBrandId = document.wearablePresetBrandId;
+      _wearablePresetBrandName = document.wearablePresetBrandName;
+      _wearablePresetMaxCharacters = document.wearablePresetMaxCharacters;
+      _presetLoaded = true;
+      if (_useWearablePreset) {
+        _maxCharactersController.text = _maxCharacters.toString();
+      }
+    });
+  }
+
+  Future<void> _loadStartupScreenSetting() async {
+    final enabled = await LocalAppStore.instance.isStartupScreenEnabled();
+    if (mounted) {
+      setState(() => _startupScreenEnabled = enabled);
+    }
+  }
+
+  void _setStartupScreenEnabled(bool enabled) {
+    setState(() => _startupScreenEnabled = enabled);
+    unawaited(LocalAppStore.instance.saveStartupScreenEnabled(enabled));
+  }
+
+  void _setUseWearablePreset(bool enabled) {
+    if (enabled && _wearablePresetMaxCharacters == null) {
+      return;
+    }
+    setState(() {
+      _useWearablePreset = enabled;
+      if (enabled) {
+        _maxCharactersController.text = _maxCharacters.toString();
+      }
+    });
+    unawaited(_persistSettings());
+  }
+
+  Future<void> _openExternalLink(String value) async {
+    final launched = await launchUrl(
+      Uri.parse(value),
+      mode: LaunchMode.externalApplication,
+    );
+    if (!launched && mounted) {
+      setState(() => _autoSaveMessage = '无法打开链接，请复制后在浏览器或应用中访问。');
+    }
   }
 
   Future<void> _clearCache() async {
@@ -2135,6 +2567,14 @@ class _UnifiedSettingsPageState extends State<UnifiedSettingsPage> {
       modeIndex: _mode.index,
       intervalMilliseconds: _intervalMilliseconds,
     );
+    if (_presetLoaded) {
+      await LocalAppStore.instance.saveWearablePreset(
+        enabled: _useWearablePreset,
+        brandId: _wearablePresetBrandId,
+        brandName: _wearablePresetBrandName,
+        maxCharacters: _wearablePresetMaxCharacters,
+      );
+    }
     if (mounted) {
       setState(() => _autoSaveMessage = '设置已自动保存');
     }
@@ -2175,6 +2615,73 @@ class _UnifiedSettingsPageState extends State<UnifiedSettingsPage> {
           child: ListView(
             padding: const EdgeInsets.all(16),
             children: [
+              Text('启动体验', style: Theme.of(context).textTheme.titleMedium),
+              const SizedBox(height: 8),
+              AnimatedContainer(
+                duration: const Duration(milliseconds: 260),
+                curve: Curves.easeOutCubic,
+                decoration: BoxDecoration(
+                  color: _startupScreenEnabled
+                      ? Theme.of(context).colorScheme.primaryContainer
+                      : Theme.of(context).colorScheme.surfaceContainerHighest,
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                child: SwitchListTile.adaptive(
+                  secondary: const Icon(Icons.auto_stories_outlined),
+                  title: const Text('启用启动页'),
+                  subtitle: Text(
+                    _startupScreenEnabled
+                        ? '每次启动请求一言并短暂显示一句文案；请求失败时使用本地兜底文案。'
+                        : '已关闭；下次启动将直接进入书库，不请求一言。',
+                  ),
+                  value: _startupScreenEnabled,
+                  onChanged: _setStartupScreenEnabled,
+                ),
+              ),
+              const SizedBox(height: 24),
+              Text('主题外观', style: Theme.of(context).textTheme.titleMedium),
+              const SizedBox(height: 8),
+              AnimatedContainer(
+                duration: const Duration(milliseconds: 300),
+                curve: Curves.easeOutCubic,
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        '选择应用主题，设置会自动保存并在下次启动时恢复。',
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                      const SizedBox(height: 10),
+                      SegmentedButton<AppThemePreference>(
+                        segments: AppThemePreference.values
+                            .map(
+                              (preference) => ButtonSegment(
+                                value: preference,
+                                icon: Icon(preference.icon),
+                                label: Text(preference.title),
+                              ),
+                            )
+                            .toList(growable: false),
+                        selected: {AppThemeController.instance.preference},
+                        onSelectionChanged: (selected) {
+                          unawaited(
+                            AppThemeController.instance.setPreference(
+                              selected.first,
+                            ),
+                          );
+                        },
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 24),
               Text('分段规则', style: Theme.of(context).textTheme.titleMedium),
               if (_autoSaveMessage != null) ...[
                 const SizedBox(height: 4),
@@ -2184,16 +2691,73 @@ class _UnifiedSettingsPageState extends State<UnifiedSettingsPage> {
                 ),
               ],
               const SizedBox(height: 8),
-              TextField(
-                controller: _maxCharactersController,
-                keyboardType: TextInputType.number,
-                inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-                decoration: InputDecoration(
-                  labelText: '统一每段最大字符数',
-                  helperText:
-                      '支持 20–1000；保存后统一按 $_maxCharacters 字/段重新切分，并覆盖局部批量调整。',
-                  prefixIcon: const Icon(Icons.format_size_outlined),
+              AnimatedSwitcher(
+                duration: const Duration(milliseconds: 260),
+                switchInCurve: Curves.easeOutBack,
+                switchOutCurve: Curves.easeInCubic,
+                child: Card(
+                  key: ValueKey(_presetLoaded && _useWearablePreset),
+                  color: _useWearablePreset
+                      ? Theme.of(context).colorScheme.secondaryContainer
+                      : null,
+                  child: SwitchListTile.adaptive(
+                    secondary: const Icon(Icons.auto_awesome_outlined),
+                    title: const Text('启用预设'),
+                    subtitle: Text(
+                      _wearablePresetMaxCharacters == null
+                          ? '尚未选择手环品牌。请重新打开引导并选择品牌后使用预设。'
+                          : '根据你选择的$_wearablePresetBrandName预设单条通知的最大容量：$_wearablePresetMaxCharacters 字/段。开启后隐藏手动字数调节。',
+                    ),
+                    value: _presetLoaded && _useWearablePreset,
+                    onChanged:
+                        !_presetLoaded || _wearablePresetMaxCharacters == null
+                        ? null
+                        : _setUseWearablePreset,
+                  ),
                 ),
+              ),
+              AnimatedSize(
+                duration: const Duration(milliseconds: 280),
+                curve: Curves.easeOutCubic,
+                child: _useWearablePreset
+                    ? Padding(
+                        padding: const EdgeInsets.only(top: 12),
+                        child: Card(
+                          color: Theme.of(context)
+                              .colorScheme
+                              .secondaryContainer,
+                          child: Padding(
+                            padding: const EdgeInsets.all(16),
+                            child: Row(
+                              children: [
+                                const Icon(Icons.tune_outlined),
+                                const SizedBox(width: 10),
+                                Expanded(
+                                  child: Text(
+                                    '当前按预设分段：$_maxCharacters 字/段。关闭“启用预设”后可手动调整。',
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      )
+                    : Padding(
+                        padding: const EdgeInsets.only(top: 12),
+                        child: TextField(
+                          controller: _maxCharactersController,
+                          keyboardType: TextInputType.number,
+                          inputFormatters: [
+                            FilteringTextInputFormatter.digitsOnly,
+                          ],
+                          decoration: InputDecoration(
+                            labelText: '统一每段最大字符数',
+                            helperText:
+                                '支持 20–1000；保存后统一按 $_maxCharacters 字/段重新切分，并覆盖局部批量调整。',
+                            prefixIcon: const Icon(Icons.format_size_outlined),
+                          ),
+                        ),
+                      ),
               ),
               const SizedBox(height: 24),
               Text('发送规则', style: Theme.of(context).textTheme.titleMedium),
@@ -2285,8 +2849,76 @@ class _UnifiedSettingsPageState extends State<UnifiedSettingsPage> {
                       const Text('应用版本'),
                       const SizedBox(height: 2),
                       Text(
-                        '2.1Alpha（2.1.0-alpha.2+3）',
+                        '2.1Alpha（2.1.0-alpha.6+7）',
                         style: Theme.of(context).textTheme.bodyMedium,
+                      ),
+                      const SizedBox(height: 18),
+                      Text(
+                        '开发者',
+                        style: Theme.of(context).textTheme.titleSmall,
+                      ),
+                      const SizedBox(height: 8),
+                      AnimatedContainer(
+                        duration: const Duration(milliseconds: 280),
+                        curve: Curves.easeOutBack,
+                        child: Material(
+                          color: Theme.of(context)
+                              .colorScheme
+                              .surfaceContainerHighest,
+                          borderRadius: BorderRadius.circular(16),
+                          child: InkWell(
+                            borderRadius: BorderRadius.circular(16),
+                            onTap: () => unawaited(
+                              _openExternalLink(
+                                'https://space.bilibili.com/3493268220283756',
+                              ),
+                            ),
+                            child: Padding(
+                              padding: const EdgeInsets.all(12),
+                              child: Row(
+                                children: [
+                                  const CircleAvatar(
+                                    radius: 28,
+                                    backgroundImage: AssetImage(
+                                      'assets/images/ritualcollapse_bilibili_avatar.webp',
+                                    ),
+                                  ),
+                                  const SizedBox(width: 12),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        const Text('ritualcollapse'),
+                                        const SizedBox(height: 2),
+                                        Text(
+                                          '哔哩哔哩 UP 主 · 点击访问主页',
+                                          style: Theme.of(context)
+                                              .textTheme
+                                              .bodySmall,
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                  const Icon(Icons.open_in_new_outlined),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        leading: const Icon(Icons.alternate_email_outlined),
+                        title: const Text('联系方式'),
+                        subtitle: const Text('huanglinran114514@outlook.com'),
+                        trailing: const Icon(Icons.open_in_new_outlined),
+                        onTap: () => unawaited(
+                          _openExternalLink(
+                            'mailto:huanglinran114514@outlook.com',
+                          ),
+                        ),
                       ),
                       const SizedBox(height: 14),
                       const Text('开源仓库'),
@@ -2302,6 +2934,19 @@ class _UnifiedSettingsPageState extends State<UnifiedSettingsPage> {
                       Text(
                         '仓库包含完整源代码、GPL-3.0 许可、历史版本安装包和中英文更新日志。',
                         style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                      const SizedBox(height: 18),
+                      SizedBox(
+                        width: double.infinity,
+                        child: FilledButton.icon(
+                          onPressed: () => Navigator.of(context).push<void>(
+                            MaterialPageRoute(
+                              builder: (_) => const DonationImagePage(),
+                            ),
+                          ),
+                          icon: const Icon(Icons.volunteer_activism_outlined),
+                          label: const Text('捐献支持'),
+                        ),
                       ),
                     ],
                   ),
