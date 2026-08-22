@@ -5,6 +5,7 @@ import 'dart:ui';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:dynamic_color/dynamic_color.dart' show DynamicColorBuilder;
+import 'package:epubx/epubx.dart' hide Image;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
@@ -762,7 +763,7 @@ class _NovelHomePageState extends State<NovelHomePage> {
                             Text(
                               hasBook
                                   ? '${chunks.length} 段 · $_maxCharacters 字/段 · ${_sendingConfig.mode.title}'
-                                  : '点击此卡片导入 TXT 小说',
+                                  : '点击此卡片导入图书',
                               style: theme.textTheme.labelMedium,
                             ),
                           ],
@@ -852,7 +853,9 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
   int _maxCharacters = 120;
   SendingConfig _sendingConfig = const SendingConfig.defaults();
   StoredSendingSession? _session;
+  Map<String, StoredSendingSession> _sessionsByBook = const {};
   bool _isBackgroundRunning = false;
+  bool _isSwitchingBook = false;
   bool _isRecoveringBackground = false;
   bool _isLoading = true;
   String? _startupError;
@@ -942,6 +945,7 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
     final document = await LocalAppStore.instance.loadDocument();
     final library = await LocalAppStore.instance.loadLibrary();
     final session = await LocalAppStore.instance.loadSendingSession();
+    final sessionsByBook = await LocalAppStore.instance.loadSendingSessions();
     final onboardingCompleted = await LocalAppStore.instance
         .hasCompletedOnboarding();
     final isRunning = await FlutterForegroundTask.isRunningService;
@@ -956,7 +960,10 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
         mode: _modeFromIndex(document.modeIndex),
         intervalMilliseconds: document.intervalMilliseconds,
       );
-      _session = session?.canResume == true ? session : null;
+      _sessionsByBook = sessionsByBook;
+      _session =
+          sessionsByBook[library.selectedBookId] ??
+          (session?.canResume == true ? session : null);
       _isBackgroundRunning = isRunning;
       _wearableBrandId = document.wearablePresetBrandId;
       _wearableBrandName = document.wearablePresetBrandName;
@@ -1022,10 +1029,14 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
 
   Future<void> _refreshSendingState() async {
     final session = await LocalAppStore.instance.loadSendingSession();
+    final sessionsByBook = await LocalAppStore.instance.loadSendingSessions();
     final running = await FlutterForegroundTask.isRunningService;
     if (mounted) {
       setState(() {
-        _session = session?.canResume == true ? session : null;
+        _sessionsByBook = sessionsByBook;
+        _session =
+            sessionsByBook[_selectedBookId] ??
+            (session?.canResume == true ? session : null);
         _isBackgroundRunning = running;
       });
     }
@@ -1041,7 +1052,7 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
       final current = _session!;
       if (mounted) {
         setState(() {
-          _session = StoredSendingSession(
+          final updated = StoredSendingSession(
             bookId: current.bookId,
             chunks: current.chunks,
             nextIndex: nextIndex,
@@ -1049,6 +1060,10 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
             intervalMilliseconds: current.intervalMilliseconds,
             notificationBaseId: current.notificationBaseId,
           );
+          _session = updated;
+          if (updated.bookId != null) {
+            _sessionsByBook = {..._sessionsByBook, updated.bookId!: updated};
+          }
           _isBackgroundRunning = true;
         });
       }
@@ -1069,29 +1084,25 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
     try {
       final files = await FilePicker.pickFiles(
         type: FileType.custom,
-        allowedExtensions: const ['txt'],
+        allowedExtensions: LocalBookImporter.supportedExtensions,
       );
       if (files.isEmpty) {
         return;
       }
       final imported = <StoredLibraryBook>[];
       for (final file in files) {
-        final bytes = await file.readAsBytes();
-        final text = NovelTextFileDecoder.decode(bytes);
-        if (text.trim().isEmpty) {
-          continue;
-        }
+        final decoded = await LocalBookImporter.decode(file);
         imported.add(
           StoredLibraryBook(
-            id: LocalAppStore.createBookId(file.name, text),
-            text: text,
+            id: LocalAppStore.createBookId(file.name, decoded.text),
+            text: decoded.text,
             fileName: file.name,
             customChunks: null,
           ),
         );
       }
       if (imported.isEmpty || !mounted) {
-        _showMessage('未找到可导入的非空 TXT 文本。');
+        _showMessage('未找到可导入的文本图书。');
         return;
       }
       final byIdentity = <String, StoredLibraryBook>{
@@ -1129,18 +1140,24 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
             children: [
               Text('导入图书', style: Theme.of(sheetContext).textTheme.titleLarge),
               const SizedBox(height: 8),
-              const Text('请选择图书来源。网络导入需要你提供有权访问的第三方图书 API 地址。'),
+              const Text('请选择图书来源。可手动填写有权访问的 API 地址，或搜索公共领域开源图书目录。'),
               const SizedBox(height: 16),
               FilledButton.icon(
                 onPressed: () => Navigator.of(sheetContext).pop('local'),
                 icon: const Icon(Icons.file_open_outlined),
-                label: const Text('本地导入 TXT'),
+                label: const Text('本地导入图书（TXT / EPUB 等）'),
               ),
               const SizedBox(height: 10),
               OutlinedButton.icon(
                 onPressed: () => Navigator.of(sheetContext).pop('network'),
                 icon: const Icon(Icons.language_outlined),
                 label: const Text('网络导入 API'),
+              ),
+              const SizedBox(height: 10),
+              OutlinedButton.icon(
+                onPressed: () => Navigator.of(sheetContext).pop('catalog'),
+                icon: const Icon(Icons.travel_explore_outlined),
+                label: const Text('搜索开源图书目录'),
               ),
             ],
           ),
@@ -1151,6 +1168,8 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
       await _importBooks();
     } else if (action == 'network') {
       await _importFromNetwork();
+    } else if (action == 'catalog') {
+      await _searchPublicDomainBooks();
     }
   }
 
@@ -1255,6 +1274,130 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
     }
   }
 
+  Future<void> _searchPublicDomainBooks() async {
+    final controller = TextEditingController();
+    final query = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('搜索开源图书'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          textInputAction: TextInputAction.search,
+          onSubmitted: (value) => Navigator.of(dialogContext).pop(value),
+          decoration: const InputDecoration(
+            labelText: '书名、作者或关键词',
+            hintText: '例如 Sherlock Holmes',
+            prefixIcon: Icon(Icons.search_outlined),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(controller.text),
+            child: const Text('搜索'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (query == null || query.trim().isEmpty || !mounted) {
+      return;
+    }
+    _showMessage('正在搜索开源图书目录…');
+    try {
+      final results = await PublicDomainBookCatalog.search(query);
+      if (!mounted) {
+        return;
+      }
+      if (results.isEmpty) {
+        _showMessage('未找到可直接下载的公共领域文本图书。');
+        return;
+      }
+      final selected = await showModalBottomSheet<PublicDomainBookResult>(
+        context: context,
+        showDragHandle: true,
+        builder: (sheetContext) => SafeArea(
+          child: ListView(
+            shrinkWrap: true,
+            children: [
+              const ListTile(
+                title: Text('开源图书搜索结果'),
+                subtitle: Text('来自 Project Gutenberg 公共领域目录；仅显示可下载的纯文本图书。'),
+              ),
+              for (final book in results)
+                ListTile(
+                  leading: const Icon(Icons.auto_stories_outlined),
+                  title: Text(book.title),
+                  subtitle: Text(
+                    '${book.author} · ${book.language} · 下载 ${book.downloadCount}',
+                  ),
+                  trailing: const Icon(Icons.download_outlined),
+                  onTap: () => Navigator.of(sheetContext).pop(book),
+                ),
+            ],
+          ),
+        ),
+      );
+      if (selected == null || !mounted) {
+        return;
+      }
+      _showMessage('正在下载《${selected.title}》…');
+      final downloaded = await PublicDomainBookCatalog.download(selected);
+      final imported = StoredLibraryBook(
+        id: LocalAppStore.createBookId(
+          '${downloaded.title}.txt',
+          downloaded.text,
+        ),
+        text: downloaded.text,
+        fileName: '${downloaded.title}.txt',
+        customChunks: null,
+      );
+      final byIdentity = <String, StoredLibraryBook>{
+        for (final book in _books)
+          '${book.fileName}:${book.text.hashCode}': book,
+        '${imported.fileName}:${imported.text.hashCode}': imported,
+      };
+      setState(() {
+        _books = byIdentity.values.toList(growable: false);
+        _selectedBookId = imported.id;
+        _session = _sessionsByBook[imported.id];
+      });
+      await _persistLibrary();
+      _showMessage('已从开源目录导入《${downloaded.title}》。');
+    } on FormatException catch (error) {
+      _showMessage(error.message.toString());
+    } catch (error) {
+      _showMessage('开源图书搜索或下载失败：$error');
+    }
+  }
+
+  Future<void> _pauseTaskBeforeBookSwitch() async {
+    final activeSession = await LocalAppStore.instance.loadSendingSession();
+    final serviceRunning = await FlutterForegroundTask.isRunningService;
+    if (activeSession?.canResume != true && !serviceRunning) {
+      return;
+    }
+    if (mounted) {
+      setState(() => _isSwitchingBook = true);
+    }
+    try {
+      // The background worker persists its next index before each notification.
+      // Stop it before changing the selected book so no new segment can cross books.
+      if (serviceRunning) {
+        await BackgroundNovelSender.stop();
+      }
+      await _refreshSendingState();
+    } finally {
+      if (mounted) {
+        setState(() => _isSwitchingBook = false);
+      }
+    }
+  }
+
   Future<void> _openLibrarySelector() async {
     final selectedId = await showModalBottomSheet<String>(
       context: context,
@@ -1284,11 +1427,13 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
                 trailing: book.id == _selectedBookId
                     ? const Icon(Icons.check_circle_outline)
                     : null,
-                onTap: () => Navigator.of(sheetContext).pop(book.id),
+                onTap: _isSwitchingBook
+                    ? null
+                    : () => Navigator.of(sheetContext).pop(book.id),
               ),
             ListTile(
               leading: const Icon(Icons.add_circle_outline),
-              title: const Text('导入更多 TXT 图书'),
+              title: const Text('导入更多本地图书'),
               onTap: () => Navigator.of(sheetContext).pop('__import__'),
             ),
           ],
@@ -1302,8 +1447,16 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
       await _showImportOptions();
       return;
     }
-    setState(() => _selectedBookId = selectedId);
+    await _pauseTaskBeforeBookSwitch();
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _selectedBookId = selectedId;
+      _session = _sessionsByBook[selectedId];
+    });
     await _persistLibrary();
+    _showMessage('已切换图书；如有进行中的传输，断点已先保存并暂停。');
   }
 
   Future<void> _openSettings() async {
@@ -1391,7 +1544,7 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
       return;
     }
     setState(() {
-      _session = StoredSendingSession(
+      final started = StoredSendingSession(
         bookId: book.id,
         chunks: chunks,
         nextIndex: 0,
@@ -1399,6 +1552,8 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
         intervalMilliseconds: _sendingConfig.intervalMilliseconds,
         notificationBaseId: baseId,
       );
+      _session = started;
+      _sessionsByBook = {..._sessionsByBook, book.id: started};
     });
     await _openTask(
       chunks: chunks,
@@ -1597,7 +1752,7 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
                 const Text('书库加载失败'),
                 const SizedBox(height: 8),
                 const Text(
-                  '可以重试加载；若本地旧数据异常，也可以清空书库后重新导入 TXT 图书。',
+                  '可以重试加载；若本地旧数据异常，也可以清空书库后重新导入图书。',
                   textAlign: TextAlign.center,
                 ),
                 const SizedBox(height: 20),
@@ -2241,8 +2396,7 @@ class _OnboardingPageState extends State<OnboardingPage> {
       (
         icon: Icons.menu_book_outlined,
         title: '欢迎使用小说通知阅读器',
-        body:
-            '此页仅以示意方式说明小说导入流程。引导结束后不会显示或自动导入示例小说；请使用自己的 TXT 图书建立书库，再统一设置每段字数。',
+        body: '此页仅以示意方式说明小说导入流程。引导结束后不会显示或自动导入示例小说；请使用自己的本地图书、已授权接口或开源目录图书建立书库，再统一设置每段字数。',
       ),
       (
         icon: Icons.notifications_active_outlined,
@@ -2642,24 +2796,17 @@ class _NovelEditorPageState extends State<NovelEditorPage> {
     try {
       final file = await FilePicker.pickFile(
         type: FileType.custom,
-        allowedExtensions: const ['txt'],
+        allowedExtensions: LocalBookImporter.supportedExtensions,
       );
       if (file == null) {
         return;
       }
-      final bytes = await file.readAsBytes();
-      if (bytes.isEmpty) {
-        throw const FormatException('所选文件为空或无法读取。');
-      }
-      final text = NovelTextFileDecoder.decode(bytes);
-      if (text.trim().isEmpty) {
-        throw const FormatException('所选 TXT 文件不包含可用文本。');
-      }
+      final decoded = await LocalBookImporter.decode(file);
       if (!mounted) {
         return;
       }
       setState(() {
-        _textController.text = text;
+        _textController.text = decoded.text;
         _fileName = file.name;
       });
       _showMessage('已导入 ${file.name}。');
@@ -2710,7 +2857,7 @@ class _NovelEditorPageState extends State<NovelEditorPage> {
                       child: CircularProgressIndicator(strokeWidth: 2),
                     )
                   : const Icon(Icons.file_open_outlined),
-              label: const Text('导入 TXT 小说'),
+              label: const Text('导入本地图书（TXT / EPUB 等）'),
             ),
             const SizedBox(height: 8),
             Text(
@@ -3246,7 +3393,7 @@ class _UnifiedSettingsPageState extends State<UnifiedSettingsPage> {
                       const Text('应用版本'),
                       const SizedBox(height: 2),
                       Text(
-                        '2.1（2.1.0+8）',
+                        '2.2Alpha（2.2.0-alpha.1+9）',
                         style: Theme.of(context).textTheme.bodyMedium,
                       ),
                       const SizedBox(height: 18),
@@ -3757,7 +3904,7 @@ class _SendingTaskPageState extends State<SendingTaskPage> {
         _isFinished = true;
         _status = '全部 ${widget.chunks.length} 段已发送完成。';
       });
-      unawaited(LocalAppStore.instance.clearSendingSession());
+      unawaited(LocalAppStore.instance.clearActiveSendingSession());
     } else if (type == 'stopped' && mounted && !_isFinished) {
       setState(() {
         _isRunning = false;
@@ -3840,7 +3987,7 @@ class _SendingTaskPageState extends State<SendingTaskPage> {
           : '全部 ${widget.chunks.length} 段已发送完成。';
     });
     if (!_cancelForeground) {
-      await LocalAppStore.instance.clearSendingSession();
+      await LocalAppStore.instance.clearActiveSendingSession();
     }
   }
 
@@ -4408,7 +4555,7 @@ class BackgroundNovelTaskHandler extends TaskHandler {
       'type': stopped ? 'stopped' : 'complete',
     });
     if (!stopped) {
-      await LocalAppStore.instance.clearSendingSession();
+      await LocalAppStore.instance.clearActiveSendingSession();
     }
     await FlutterForegroundTask.stopService();
   }
@@ -4425,6 +4572,137 @@ class BackgroundNovelTaskHandler extends TaskHandler {
     if (id == 'stop') {
       unawaited(_finish(stopped: true));
     }
+  }
+}
+
+class ImportedLocalBook {
+  const ImportedLocalBook({required this.title, required this.text});
+
+  final String title;
+  final String text;
+}
+
+class LocalBookImporter {
+  LocalBookImporter._();
+
+  static const supportedExtensions = <String>[
+    'txt',
+    'text',
+    'md',
+    'markdown',
+    'log',
+    'json',
+    'epub',
+  ];
+
+  static Future<ImportedLocalBook> decode(PlatformFile file) async {
+    final bytes = await file.readAsBytes();
+    final extension = _extensionOf(file.name);
+    final fallbackTitle = _baseName(file.name);
+    if (extension == 'epub') {
+      return _decodeEpub(bytes, fallbackTitle);
+    }
+    final raw = NovelTextFileDecoder.decode(bytes);
+    final text = extension == 'json' ? _extractJsonText(raw) ?? raw : raw;
+    if (text.trim().isEmpty) {
+      throw FormatException('《$fallbackTitle》未包含可导入的文本内容。');
+    }
+    return ImportedLocalBook(title: fallbackTitle, text: text.trim());
+  }
+
+  static Future<ImportedLocalBook> _decodeEpub(
+    Uint8List bytes,
+    String fallbackTitle,
+  ) async {
+    try {
+      final book = await EpubReader.readBook(bytes);
+      final buffer = StringBuffer();
+      void appendChapter(EpubChapter chapter) {
+        final html = chapter.HtmlContent;
+        if (html != null && html.trim().isNotEmpty) {
+          final text = _stripHtml(html);
+          if (text.isNotEmpty) {
+            buffer.writeln(text);
+            buffer.writeln();
+          }
+        }
+        for (final child in chapter.SubChapters ?? const <EpubChapter>[]) {
+          appendChapter(child);
+        }
+      }
+
+      for (final chapter in book.Chapters ?? const <EpubChapter>[]) {
+        appendChapter(chapter);
+      }
+      final text = buffer.toString().trim();
+      if (text.isEmpty) {
+        throw const FormatException('EPUB 中未找到可导入的章节文本。');
+      }
+      return ImportedLocalBook(
+        title: (book.Title ?? '').trim().isEmpty
+            ? fallbackTitle
+            : book.Title!.trim(),
+        text: text,
+      );
+    } on FormatException {
+      rethrow;
+    } catch (error) {
+      throw FormatException('无法解析 EPUB：$error');
+    }
+  }
+
+  static String _stripHtml(String html) {
+    return html
+        .replaceAll(
+          RegExp(
+            r'<(script|style)[^>]*>[\\s\\S]*?</\\1>',
+            caseSensitive: false,
+          ),
+          '',
+        )
+        .replaceAll(RegExp(r'<[^>]+>'), ' ')
+        .replaceAll('&nbsp;', ' ')
+        .replaceAll('&amp;', '&')
+        .replaceAll('&lt;', '<')
+        .replaceAll('&gt;', '>')
+        .replaceAll(RegExp(r'\\s+'), ' ')
+        .trim();
+  }
+
+  static String? _extractJsonText(String raw) {
+    try {
+      final decoded = jsonDecode(raw);
+      return _findText(decoded);
+    } on FormatException {
+      return null;
+    }
+  }
+
+  static String? _findText(Object? value) {
+    if (value is String && value.trim().isNotEmpty) {
+      return value;
+    }
+    if (value is Map) {
+      for (final key in const ['content', 'text', 'body', 'bookText', 'data']) {
+        final found = _findText(value[key]);
+        if (found != null) {
+          return found;
+        }
+      }
+    }
+    return null;
+  }
+
+  static String _extensionOf(String fileName) {
+    final dot = fileName.lastIndexOf('.');
+    return dot < 0 ? '' : fileName.substring(dot + 1).toLowerCase();
+  }
+
+  static String _baseName(String fileName) {
+    final dot = fileName.lastIndexOf('.');
+    return (dot <= 0 ? fileName : fileName.substring(0, dot)).trim().isEmpty
+        ? '本地图书'
+        : (dot <= 0 ? fileName : fileName.substring(0, dot)).trim();
   }
 }
 

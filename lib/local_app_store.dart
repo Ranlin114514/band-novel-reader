@@ -91,6 +91,37 @@ class StoredSendingSession {
   final int notificationBaseId;
 
   bool get canResume => chunks.isNotEmpty && nextIndex < chunks.length;
+
+  Map<String, Object?> toJson() => {
+    'bookId': bookId,
+    'chunks': chunks,
+    'nextIndex': nextIndex,
+    'modeIndex': modeIndex,
+    'intervalMilliseconds': intervalMilliseconds,
+    'notificationBaseId': notificationBaseId,
+  };
+
+  static StoredSendingSession? fromJson(Object? value) {
+    if (value is! Map) {
+      return null;
+    }
+    final chunks = _decodeChunksFromValue(value['chunks']);
+    final nextIndex = value['nextIndex'];
+    final notificationBaseId = value['notificationBaseId'];
+    if (chunks == null || nextIndex is! int || notificationBaseId is! int) {
+      return null;
+    }
+    return StoredSendingSession(
+      bookId: value['bookId'] as String?,
+      chunks: chunks,
+      nextIndex: nextIndex.clamp(0, chunks.length).toInt(),
+      modeIndex: value['modeIndex'] as int? ?? 0,
+      intervalMilliseconds: (value['intervalMilliseconds'] as int? ?? 1000)
+          .clamp(100, 3600000)
+          .toInt(),
+      notificationBaseId: notificationBaseId,
+    );
+  }
 }
 
 class LocalAppStore {
@@ -116,6 +147,7 @@ class LocalAppStore {
   static const _customChunksKey = 'novel_custom_chunks_json';
   static const _libraryBooksKey = 'library_books_json';
   static const _selectedBookIdKey = 'library_selected_book_id';
+  static const _sessionsByBookKey = 'sending_sessions_by_book_json';
   static const _sessionBookIdKey = 'session_book_id';
   static const _sessionChunksKey = 'session_chunks_json';
   static const _sessionNextIndexKey = 'session_next_index';
@@ -377,6 +409,35 @@ class LocalAppStore {
     );
   }
 
+  Future<Map<String, StoredSendingSession>> loadSendingSessions() async {
+    final preferences = await SharedPreferences.getInstance();
+    final decoded = _decodeJsonMap(preferences.getString(_sessionsByBookKey));
+    final sessions = <String, StoredSendingSession>{};
+    if (decoded != null) {
+      for (final entry in decoded.entries) {
+        final session = StoredSendingSession.fromJson(entry.value);
+        if (session?.bookId == entry.key && session!.canResume) {
+          sessions[entry.key] = session;
+        }
+      }
+    }
+    final legacy = await loadSendingSession();
+    if (legacy?.bookId case final String bookId when legacy!.canResume) {
+      sessions.putIfAbsent(bookId, () => legacy);
+    }
+    return sessions;
+  }
+
+  Future<void> _saveSendingSessions(
+    SharedPreferences preferences,
+    Map<String, StoredSendingSession> sessions,
+  ) async {
+    await preferences.setString(
+      _sessionsByBookKey,
+      jsonEncode(sessions.map((key, value) => MapEntry(key, value.toJson()))),
+    );
+  }
+
   Future<void> saveSendingSession({
     String? bookId,
     required List<String> chunks,
@@ -402,6 +463,18 @@ class LocalAppStore {
       intervalMilliseconds.clamp(100, 3600000).toInt(),
     );
     await preferences.setInt(_sessionNotificationBaseIdKey, notificationBaseId);
+    if (bookId != null) {
+      final sessions = await loadSendingSessions();
+      sessions[bookId] = StoredSendingSession(
+        bookId: bookId,
+        chunks: chunks,
+        nextIndex: nextIndex.clamp(0, chunks.length).toInt(),
+        modeIndex: modeIndex,
+        intervalMilliseconds: intervalMilliseconds.clamp(100, 3600000).toInt(),
+        notificationBaseId: notificationBaseId,
+      );
+      await _saveSendingSessions(preferences, sessions);
+    }
   }
 
   int _readIntervalMilliseconds(
@@ -423,10 +496,50 @@ class LocalAppStore {
   Future<void> updateSendingProgress(int nextIndex) async {
     final preferences = await SharedPreferences.getInstance();
     await preferences.setInt(_sessionNextIndexKey, nextIndex);
+    final active = await loadSendingSession();
+    final bookId = active?.bookId;
+    if (active != null && bookId != null) {
+      final sessions = await loadSendingSessions();
+      final updated = StoredSendingSession(
+        bookId: bookId,
+        chunks: active.chunks,
+        nextIndex: nextIndex.clamp(0, active.chunks.length).toInt(),
+        modeIndex: active.modeIndex,
+        intervalMilliseconds: active.intervalMilliseconds,
+        notificationBaseId: active.notificationBaseId,
+      );
+      if (updated.canResume) {
+        sessions[bookId] = updated;
+      } else {
+        sessions.remove(bookId);
+      }
+      await _saveSendingSessions(preferences, sessions);
+    }
+  }
+
+  Future<void> clearActiveSendingSession() async {
+    final active = await loadSendingSession();
+    final bookId = active?.bookId;
+    if (bookId == null) {
+      await clearSendingSession();
+      return;
+    }
+    final preferences = await SharedPreferences.getInstance();
+    final sessions = await loadSendingSessions();
+    sessions.remove(bookId);
+    await _saveSendingSessions(preferences, sessions);
+    await _clearLegacySendingSession(preferences);
   }
 
   Future<void> clearSendingSession() async {
     final preferences = await SharedPreferences.getInstance();
+    await Future.wait([
+      preferences.remove(_sessionsByBookKey),
+      _clearLegacySendingSession(preferences),
+    ]);
+  }
+
+  Future<void> _clearLegacySendingSession(SharedPreferences preferences) async {
     await Future.wait([
       preferences.remove(_sessionBookIdKey),
       preferences.remove(_sessionChunksKey),
@@ -467,4 +580,22 @@ List<String>? _decodeChunksFromValue(Object? value) {
   }
   final chunks = value.map((item) => item.toString()).toList(growable: false);
   return chunks.isEmpty ? null : chunks;
+}
+
+Map<String, Object?>? _decodeJsonMap(String? encoded) {
+  if (encoded == null || encoded.isEmpty) {
+    return null;
+  }
+  try {
+    final decoded = jsonDecode(encoded);
+    if (decoded is! Map) {
+      return null;
+    }
+    return {
+      for (final entry in decoded.entries)
+        if (entry.key is String) entry.key as String: entry.value,
+    };
+  } catch (_) {
+    return null;
+  }
 }

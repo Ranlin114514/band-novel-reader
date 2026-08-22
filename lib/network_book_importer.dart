@@ -97,3 +97,119 @@ class NetworkBookImporter {
     return null;
   }
 }
+
+/// A copyright-free text record returned by the Gutendex / Project Gutenberg
+/// catalogue. Only records that expose a direct plain-text download are used.
+class PublicDomainBookResult {
+  const PublicDomainBookResult({
+    required this.id,
+    required this.title,
+    required this.author,
+    required this.language,
+    required this.downloadCount,
+    required this.textUrl,
+  });
+
+  final int id;
+  final String title;
+  final String author;
+  final String language;
+  final int downloadCount;
+  final String textUrl;
+}
+
+class PublicDomainBookCatalog {
+  PublicDomainBookCatalog._();
+
+  static Future<List<PublicDomainBookResult>> search(String query) async {
+    final normalized = query.trim();
+    if (normalized.isEmpty) {
+      return const [];
+    }
+    final uri = Uri.https('gutendex.com', '/books', {'search': normalized});
+    final response = await http
+        .get(uri, headers: const {'Accept': 'application/json'})
+        .timeout(const Duration(seconds: 15));
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw FormatException('开源图书目录返回 HTTP ${response.statusCode}。');
+    }
+    final decoded = jsonDecode(utf8.decode(response.bodyBytes));
+    if (decoded is! Map || decoded['results'] is! List) {
+      throw const FormatException('开源图书目录返回了无法识别的搜索结果。');
+    }
+    final results = <PublicDomainBookResult>[];
+    for (final raw in decoded['results'] as List) {
+      if (raw is! Map ||
+          raw['copyright'] != false ||
+          raw['media_type'] != 'Text') {
+        continue;
+      }
+      final id = raw['id'];
+      final title = raw['title'];
+      final formats = raw['formats'];
+      if (id is! int || title is! String || formats is! Map) {
+        continue;
+      }
+      final textUrl = _readPlainTextUrl(formats);
+      if (textUrl == null) {
+        continue;
+      }
+      final authors = raw['authors'];
+      final author = authors is List
+          ? authors
+                .whereType<Map>()
+                .map((entry) => entry['name'])
+                .whereType<String>()
+                .where((name) => name.trim().isNotEmpty)
+                .join('、')
+          : '';
+      final languages = raw['languages'];
+      final language = languages is List
+          ? languages.whereType<String>().join(', ')
+          : '';
+      results.add(
+        PublicDomainBookResult(
+          id: id,
+          title: title.trim().isEmpty ? '未命名图书' : title.trim(),
+          author: author.isEmpty ? '未知作者' : author,
+          language: language.isEmpty ? '未知语言' : language,
+          downloadCount: raw['download_count'] is int
+              ? raw['download_count'] as int
+              : 0,
+          textUrl: textUrl,
+        ),
+      );
+    }
+    return results;
+  }
+
+  static Future<DownloadedNetworkBook> download(PublicDomainBookResult book) {
+    return NetworkBookImporter.download(
+      url: book.textUrl,
+      titleFallback: book.title,
+    );
+  }
+
+  static String? _readPlainTextUrl(Map formats) {
+    const preferred = [
+      'text/plain; charset=utf-8',
+      'text/plain; charset=us-ascii',
+      'text/plain',
+    ];
+    for (final key in preferred) {
+      final value = formats[key];
+      if (value is String && value.startsWith('http')) {
+        return value;
+      }
+    }
+    for (final entry in formats.entries) {
+      if (entry.key is String &&
+          (entry.key as String).startsWith('text/plain') &&
+          entry.value is String &&
+          (entry.value as String).startsWith('http')) {
+        return entry.value as String;
+      }
+    }
+    return null;
+  }
+}
