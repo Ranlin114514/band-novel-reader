@@ -853,6 +853,7 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
   SendingConfig _sendingConfig = const SendingConfig.defaults();
   StoredSendingSession? _session;
   bool _isBackgroundRunning = false;
+  bool _isRecoveringBackground = false;
   bool _isLoading = true;
   String? _startupError;
   String? _wearableBrandId;
@@ -915,7 +916,9 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
     super.initState();
     _lifecycleListener = AppLifecycleListener(
       onStateChange: (state) {
-        if (state != AppLifecycleState.resumed) {
+        if (state == AppLifecycleState.resumed) {
+          unawaited(_refreshAndRecoverBackgroundSession());
+        } else {
           unawaited(_persistLibrary());
         }
       },
@@ -967,11 +970,28 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
     }
   }
 
+  Future<void> _refreshAndRecoverBackgroundSession() async {
+    await _refreshSendingState();
+    final session = _session;
+    if (session?.canResume == true && !_isBackgroundRunning) {
+      await _recoverBackgroundSession(session!);
+    }
+  }
+
   Future<void> _recoverBackgroundSession(StoredSendingSession session) async {
-    if (session.nextIndex >= session.chunks.length || session.chunks.isEmpty) {
+    if (_isRecoveringBackground ||
+        session.nextIndex >= session.chunks.length ||
+        session.chunks.isEmpty) {
       return;
     }
+    _isRecoveringBackground = true;
     try {
+      if (await FlutterForegroundTask.isRunningService) {
+        if (mounted) {
+          setState(() => _isBackgroundRunning = true);
+        }
+        return;
+      }
       await BackgroundNovelSender.start(
         chunks: session.chunks,
         intervalMilliseconds: session.intervalMilliseconds,
@@ -983,6 +1003,8 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
       }
     } catch (_) {
       // The resumable session is retained for a later foreground restart.
+    } finally {
+      _isRecoveringBackground = false;
     }
   }
 
@@ -1037,7 +1059,8 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
           _isBackgroundRunning = false;
         });
       }
-    } else if (type == 'stopped' && mounted) {
+    } else if ((type == 'stopped' || type == 'interrupted') && mounted) {
+      // Keep the persisted session; it will be resumed when the app returns to foreground.
       setState(() => _isBackgroundRunning = false);
     }
   }
@@ -4260,6 +4283,7 @@ class BackgroundNovelTaskHandler extends TaskHandler {
       FlutterLocalNotificationsPlugin();
   bool _isReady = false;
   bool _isComplete = false;
+  bool _isSending = false;
 
   @override
   Future<void> onStart(DateTime timestamp, TaskStarter starter) async {
@@ -4275,59 +4299,69 @@ class BackgroundNovelTaskHandler extends TaskHandler {
   }
 
   Future<void> _sendNext() async {
-    if (!_isReady || _isComplete) {
+    if (!_isReady || _isComplete || _isSending) {
       return;
     }
+    _isSending = true;
+    try {
+      final chunksJson = await FlutterForegroundTask.getData<String>(
+        key: BackgroundNovelSender._chunksKey,
+      );
+      final nextIndex = await FlutterForegroundTask.getData<int>(
+        key: BackgroundNovelSender._nextIndexKey,
+      );
+      final baseId = await FlutterForegroundTask.getData<int>(
+        key: BackgroundNovelSender._notificationBaseIdKey,
+      );
+      if (chunksJson == null || nextIndex == null || baseId == null) {
+        await _finish(stopped: true);
+        return;
+      }
 
-    final chunksJson = await FlutterForegroundTask.getData<String>(
-      key: BackgroundNovelSender._chunksKey,
-    );
-    final nextIndex = await FlutterForegroundTask.getData<int>(
-      key: BackgroundNovelSender._nextIndexKey,
-    );
-    final baseId = await FlutterForegroundTask.getData<int>(
-      key: BackgroundNovelSender._notificationBaseIdKey,
-    );
-    if (chunksJson == null || nextIndex == null || baseId == null) {
-      await _finish(stopped: true);
-      return;
-    }
+      final decoded = jsonDecode(chunksJson);
+      if (decoded is! List) {
+        await _finish(stopped: true);
+        return;
+      }
+      final chunks = decoded
+          .map((item) => item.toString())
+          .toList(growable: false);
+      if (nextIndex >= chunks.length) {
+        await _finish();
+        return;
+      }
 
-    final decoded = jsonDecode(chunksJson);
-    if (decoded is! List) {
-      await _finish(stopped: true);
-      return;
-    }
-    final chunks = decoded
-        .map((item) => item.toString())
-        .toList(growable: false);
-    if (nextIndex >= chunks.length) {
-      await _finish();
-      return;
-    }
+      final text = chunks[nextIndex];
+      await NotificationService.showChunkWithPlugin(
+        _notifications,
+        id: baseId + nextIndex,
+        index: nextIndex,
+        total: chunks.length,
+        text: text,
+      );
+      final sent = nextIndex + 1;
+      await FlutterForegroundTask.saveData(
+        key: BackgroundNovelSender._nextIndexKey,
+        value: sent,
+      );
+      await LocalAppStore.instance.updateSendingProgress(sent);
+      await FlutterForegroundTask.updateService(
+        notificationTitle: '小说后台发送中',
+        notificationText: '已发送 $sent/${chunks.length} 段',
+      );
+      FlutterForegroundTask.sendDataToMain({'type': 'progress', 'sent': sent});
 
-    final text = chunks[nextIndex];
-    await NotificationService.showChunkWithPlugin(
-      _notifications,
-      id: baseId + nextIndex,
-      index: nextIndex,
-      total: chunks.length,
-      text: text,
-    );
-    final sent = nextIndex + 1;
-    await FlutterForegroundTask.saveData(
-      key: BackgroundNovelSender._nextIndexKey,
-      value: sent,
-    );
-    await LocalAppStore.instance.updateSendingProgress(sent);
-    await FlutterForegroundTask.updateService(
-      notificationTitle: '小说后台发送中',
-      notificationText: '已发送 $sent/${chunks.length} 段',
-    );
-    FlutterForegroundTask.sendDataToMain({'type': 'progress', 'sent': sent});
-
-    if (sent >= chunks.length) {
-      await _finish();
+      if (sent >= chunks.length) {
+        await _finish();
+      }
+    } catch (error) {
+      // Preserve LocalAppStore progress so the foreground app can restart safely.
+      FlutterForegroundTask.sendDataToMain({
+        'type': 'interrupted',
+        'error': error.toString(),
+      });
+    } finally {
+      _isSending = false;
     }
   }
 
@@ -4348,7 +4382,7 @@ class BackgroundNovelTaskHandler extends TaskHandler {
   @override
   Future<void> onDestroy(DateTime timestamp, bool isTimeout) async {
     if (!_isComplete) {
-      FlutterForegroundTask.sendDataToMain({'type': 'stopped'});
+      FlutterForegroundTask.sendDataToMain({'type': 'interrupted'});
     }
   }
 
