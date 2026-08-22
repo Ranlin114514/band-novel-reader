@@ -51,5 +51,14 @@
             <action android:name="android.intent.action.PROCESS_TEXT"/>
             <data android:mimeType="text/plain"/>
         </intent>
+        <!-- 手环管理软件的启动查询；用于首次引导中的品牌选择。 -->
+        <package android:name="com.xiaomi.wearable" />
+        <package android:name="com.xiaomi.hm.health" />
+        <package android:name="com.huawei.health" />
+        <package android:name="com.hihonor.health" />
+        <package android:name="com.heytap.health.international" />
+        <package android:name="com.heytap.health" />
+        <package android:name="com.vivo.exhealth" />
+        <package android:name="com.vivo.health" />
     </queries>
 </manifest>

@@ -18,5 +18,6 @@ Each GitHub Release page now retains **one APK installer only**, uniformly named
 | `v1.1` | `band-novel-reader.apk` | ARM64 release |
 | `v1.2` | `band-novel-reader.apk` | ARM64 release |
 | `v2.0` | `band-novel-reader.apk` | ARM64 release; includes the Settings About section |
+| `v2.1Alpha` | `band-novel-reader.apk` | ARM64 prerelease; adds wearable brand selection and companion-app launch |
 
 > **安装建议 / Installation guidance**: 安装较旧版本前，通常需要先卸载较新版本，因为 Android 一般不允许为相同包名直接降级安装。 Before installing an older build, uninstall a newer build first in most cases because Android generally does not allow downgrading the same package ID.

@@ -3,6 +3,7 @@ package com.ritualcollapse.wristnovel
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.provider.Settings
 import androidx.core.app.ActivityCompat
@@ -17,6 +18,23 @@ class MainActivity : FlutterActivity() {
     companion object {
         private const val CHANNEL_NAME = "com.ritualcollapse.wristnovel/notifications"
         private const val REQUEST_POST_NOTIFICATIONS = 6107
+
+        private val wearableManagerPackages = mapOf(
+            "xiaomi" to listOf(
+                "com.xiaomi.wearable",
+                "com.xiaomi.hm.health",
+            ),
+            "huawei" to listOf("com.huawei.health"),
+            "honor" to listOf("com.hihonor.health"),
+            "oppo" to listOf(
+                "com.heytap.health.international",
+                "com.heytap.health",
+            ),
+            "vivo" to listOf(
+                "com.vivo.exhealth",
+                "com.vivo.health",
+            ),
+        )
     }
 
     private var pendingPermissionResult: MethodChannel.Result? = null
@@ -38,7 +56,51 @@ class MainActivity : FlutterActivity() {
                 startActivity(intent)
                 result.success(true)
             }
+            "launchWearableManager" -> launchWearableManager(call, result)
             else -> result.notImplemented()
+        }
+    }
+
+    private fun launchWearableManager(call: MethodCall, result: MethodChannel.Result) {
+        val brand = call.argument<String>("brand")?.lowercase()
+        val candidates = wearableManagerPackages[brand]
+        if (candidates == null) {
+            result.error("unsupported_wearable_brand", "不支持的手环品牌。", null)
+            return
+        }
+
+        for (packageId in candidates) {
+            val launchIntent = packageManager.getLaunchIntentForPackage(packageId)
+            if (launchIntent != null) {
+                startActivity(launchIntent)
+                result.success(mapOf("status" to "launched", "packageId" to packageId))
+                return
+            }
+        }
+
+        val preferredPackage = candidates.first()
+        val storeIntent = Intent(
+            Intent.ACTION_VIEW,
+            Uri.parse("market://details?id=$preferredPackage"),
+        )
+        try {
+            startActivity(storeIntent)
+            result.success(mapOf("status" to "store", "packageId" to preferredPackage))
+        } catch (_: Exception) {
+            val webStoreIntent = Intent(
+                Intent.ACTION_VIEW,
+                Uri.parse("https://play.google.com/store/apps/details?id=$preferredPackage"),
+            )
+            try {
+                startActivity(webStoreIntent)
+                result.success(mapOf("status" to "store", "packageId" to preferredPackage))
+            } catch (error: Exception) {
+                result.error(
+                    "wearable_manager_unavailable",
+                    "未找到对应的手环管理软件，也无法打开应用商店：${error.message}",
+                    null,
+                )
+            }
         }
     }
 

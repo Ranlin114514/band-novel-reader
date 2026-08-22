@@ -1450,6 +1450,20 @@ class _BookCover extends StatelessWidget {
   }
 }
 
+class WearableManagerOption {
+  const WearableManagerOption({
+    required this.id,
+    required this.brandName,
+    required this.appName,
+    required this.icon,
+  });
+
+  final String id;
+  final String brandName;
+  final String appName;
+  final IconData icon;
+}
+
 class OnboardingPage extends StatefulWidget {
   const OnboardingPage({super.key});
 
@@ -1462,6 +1476,42 @@ class _OnboardingPageState extends State<OnboardingPage> {
   bool? _notificationGranted;
   bool _requestingPermission = false;
   int _permissionStateVersion = 0;
+  WearableManagerOption? _selectedWearableManager;
+  bool _openingWearableManager = false;
+  String? _wearableManagerMessage;
+
+  static const _wearableManagerOptions = <WearableManagerOption>[
+    WearableManagerOption(
+      id: 'xiaomi',
+      brandName: '小米',
+      appName: 'Mi Fitness / Zepp Life',
+      icon: Icons.watch_outlined,
+    ),
+    WearableManagerOption(
+      id: 'huawei',
+      brandName: '华为',
+      appName: '华为运动健康',
+      icon: Icons.favorite_outline,
+    ),
+    WearableManagerOption(
+      id: 'honor',
+      brandName: '荣耀',
+      appName: '荣耀运动健康',
+      icon: Icons.health_and_safety_outlined,
+    ),
+    WearableManagerOption(
+      id: 'oppo',
+      brandName: 'OPPO',
+      appName: 'OHealth',
+      icon: Icons.directions_run_outlined,
+    ),
+    WearableManagerOption(
+      id: 'vivo',
+      brandName: 'vivo',
+      appName: 'Origin Health',
+      icon: Icons.monitor_heart_outlined,
+    ),
+  ];
 
   @override
   void initState() {
@@ -1508,6 +1558,39 @@ class _OnboardingPageState extends State<OnboardingPage> {
     }
   }
 
+  Future<void> _launchWearableManager(WearableManagerOption option) async {
+    if (_openingWearableManager) {
+      return;
+    }
+    setState(() {
+      _selectedWearableManager = option;
+      _openingWearableManager = true;
+      _wearableManagerMessage = null;
+    });
+    try {
+      final result = await NotificationService.instance.launchWearableManager(
+        option.id,
+      );
+      if (!mounted) {
+        return;
+      }
+      final status = result['status'];
+      setState(() {
+        _wearableManagerMessage = status == 'launched'
+            ? '已打开 ${option.appName}。请在其中找到“设备 / 通知 / 应用通知”，开启“手环通知小说”的通知同步；完成后返回本应用。'
+            : '未检测到已安装的 ${option.appName}，已尝试打开应用商店。安装后请在管理软件内开启“手环通知小说”的通知同步。';
+      });
+    } on FormatException catch (error) {
+      if (mounted) {
+        setState(() => _wearableManagerMessage = error.message);
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _openingWearableManager = false);
+      }
+    }
+  }
+
   Future<void> _next() async {
     if (_step == 0) {
       setState(() => _step = 1);
@@ -1521,7 +1604,10 @@ class _OnboardingPageState extends State<OnboardingPage> {
       await _requestNotifications();
       return;
     }
-    if (_step < 2) {
+    if (_step == 2 && _selectedWearableManager == null) {
+      return;
+    }
+    if (_step < 3) {
       setState(() => _step++);
       return;
     }
@@ -1553,6 +1639,11 @@ class _OnboardingPageState extends State<OnboardingPage> {
         icon: Icons.notifications_active_outlined,
         title: '请开启通知权限',
         body: '小说的完整分段会通过系统通知显示。Android 13 及以上需要在系统弹窗中允许通知后才能发送。',
+      ),
+      (
+        icon: Icons.watch_outlined,
+        title: '选择手环管理软件',
+        body: '选择你的手环品牌后，应用会自动打开相应的管理软件。请在其中开启“手环通知小说”的应用通知同步或镜像。',
       ),
       (
         icon: Icons.save_outlined,
@@ -1659,6 +1750,48 @@ class _OnboardingPageState extends State<OnboardingPage> {
                     ),
                   ],
                 ],
+                if (_step == 2) ...[
+                  const SizedBox(height: 18),
+                  Text(
+                    '选择品牌后会自动打开对应的手环管理软件：',
+                    style: Theme.of(context).textTheme.titleSmall,
+                  ),
+                  const SizedBox(height: 10),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    alignment: WrapAlignment.center,
+                    children: _wearableManagerOptions.map((option) {
+                      return ChoiceChip(
+                        avatar: Icon(option.icon, size: 18),
+                        label: Text(option.brandName),
+                        selected: _selectedWearableManager?.id == option.id,
+                        onSelected: _openingWearableManager
+                            ? null
+                            : (_) => unawaited(_launchWearableManager(option)),
+                      );
+                    }).toList(),
+                  ),
+                  const SizedBox(height: 12),
+                  if (_openingWearableManager)
+                    const SizedBox(
+                      width: 22,
+                      height: 22,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  else if (_wearableManagerMessage != null)
+                    Text(
+                      _wearableManagerMessage!,
+                      textAlign: TextAlign.center,
+                      style: Theme.of(context).textTheme.bodySmall,
+                    )
+                  else
+                    Text(
+                      '未安装时将尝试打开应用商店；如无法打开，请手动安装对应管理软件。',
+                      textAlign: TextAlign.center,
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                ],
                 const Spacer(),
                 Row(
                   children: [
@@ -1669,7 +1802,9 @@ class _OnboardingPageState extends State<OnboardingPage> {
                       ),
                     const Spacer(),
                     FilledButton.icon(
-                      onPressed: _step == 1 && _notificationGranted != true
+                      onPressed:
+                          (_step == 1 && _notificationGranted != true) ||
+                              (_step == 2 && _selectedWearableManager == null)
                           ? null
                           : _next,
                       icon: Icon(
@@ -2069,7 +2204,7 @@ class _UnifiedSettingsPageState extends State<UnifiedSettingsPage> {
                       const Text('应用版本'),
                       const SizedBox(height: 2),
                       Text(
-                        '2.0（2.0.0+1）',
+                        '2.1Alpha（2.1.0-alpha.1+2）',
                         style: Theme.of(context).textTheme.bodyMedium,
                       ),
                       const SizedBox(height: 14),
@@ -2824,6 +2959,23 @@ class NotificationService {
       throw const FormatException('无法打开系统通知设置，请在系统设置中手动开启本应用通知。');
     } on MissingPluginException {
       throw const FormatException('当前设备不支持直接打开系统通知设置。');
+    }
+  }
+
+  Future<Map<String, dynamic>> launchWearableManager(String brand) async {
+    try {
+      final result = await _systemNotificationChannel
+          .invokeMapMethod<String, dynamic>('launchWearableManager', {
+            'brand': brand,
+          });
+      if (result == null) {
+        throw const FormatException('无法启动手环管理软件。');
+      }
+      return Map<String, dynamic>.from(result);
+    } on PlatformException catch (error) {
+      throw FormatException(error.message ?? '无法启动手环管理软件。');
+    } on MissingPluginException {
+      throw const FormatException('当前设备不支持直接启动手环管理软件。');
     }
   }
 
