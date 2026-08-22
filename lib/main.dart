@@ -192,6 +192,39 @@ class NovelNotifierApp extends StatelessWidget {
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
       ),
+      dividerTheme: DividerThemeData(
+        color: scheme.outlineVariant,
+        space: 1,
+        thickness: 1,
+      ),
+      navigationBarTheme: NavigationBarThemeData(
+        indicatorColor: scheme.secondaryContainer,
+        labelTextStyle: WidgetStateProperty.resolveWith(
+          (states) => TextStyle(
+            color: states.contains(WidgetState.selected)
+                ? scheme.onSecondaryContainer
+                : scheme.onSurfaceVariant,
+          ),
+        ),
+      ),
+      chipTheme: ChipThemeData(
+        side: BorderSide(color: scheme.outlineVariant),
+        shape: const StadiumBorder(),
+        selectedColor: scheme.secondaryContainer,
+        labelStyle: TextStyle(color: scheme.onSurfaceVariant),
+        secondaryLabelStyle: TextStyle(color: scheme.onSecondaryContainer),
+      ),
+      iconButtonTheme: IconButtonThemeData(
+        style: IconButton.styleFrom(
+          foregroundColor: scheme.onSurfaceVariant,
+          shape: const CircleBorder(),
+        ),
+      ),
+      floatingActionButtonTheme: FloatingActionButtonThemeData(
+        backgroundColor: scheme.primaryContainer,
+        foregroundColor: scheme.onPrimaryContainer,
+        shape: const StadiumBorder(),
+      ),
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
         fillColor: scheme.surfaceContainerHighest,
