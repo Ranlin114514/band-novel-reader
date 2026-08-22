@@ -1999,7 +1999,7 @@ class _OnboardingPageState extends State<OnboardingPage> {
       (
         icon: Icons.volunteer_activism_outlined,
         title: '支持项目继续前行',
-        body: '捐献我们，让我们走得更远。感谢每一份支持。',
+        body: '捐献我们，让我们走的更远。感谢每一份支持。',
       ),
       (
         icon: Icons.save_outlined,
@@ -2235,7 +2235,7 @@ class DonationImagePage extends StatelessWidget {
           child: Column(
             children: [
               Text(
-                '捐献我们，让我们走得更远',
+                '捐献我们，让我们走的更远',
                 style: Theme.of(context).textTheme.titleLarge,
                 textAlign: TextAlign.center,
               ),
