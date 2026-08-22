@@ -57,6 +57,7 @@ class MainActivity : FlutterActivity() {
                 result.success(true)
             }
             "openBatteryOptimizationSettings" -> openBatteryOptimizationSettings(result)
+            "openHuaweiAppLaunchSettings" -> openHuaweiAppLaunchSettings(result)
             "launchWearableManager" -> launchWearableManager(call, result)
             else -> result.notImplemented()
         }
@@ -77,6 +78,29 @@ class MainActivity : FlutterActivity() {
                 result.error("battery_settings_unavailable", "无法打开电池优化设置：${error.message}", null)
             }
         }
+    }
+
+    private fun openHuaweiAppLaunchSettings(result: MethodChannel.Result) {
+        val candidates = listOf(
+            Intent().setClassName(
+                "com.huawei.systemmanager",
+                "com.huawei.systemmanager.startupmgr.ui.StartupNormalAppListActivity",
+            ),
+            Intent("huawei.intent.action.HSM_PROTECTED_APPS"),
+            Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                data = Uri.parse("package:$packageName")
+            },
+        )
+        for (intent in candidates) {
+            try {
+                startActivity(intent)
+                result.success(true)
+                return
+            } catch (_: Exception) {
+                // Try the next Huawei/system setting entry point.
+            }
+        }
+        result.error("huawei_launch_settings_unavailable", "无法打开华为应用启动管理，请在设置中搜索“应用启动管理”。", null)
     }
 
     private fun launchWearableManager(call: MethodCall, result: MethodChannel.Result) {

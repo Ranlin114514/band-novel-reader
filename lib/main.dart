@@ -2998,6 +2998,27 @@ class _UnifiedSettingsPageState extends State<UnifiedSettingsPage> {
                   },
                 ),
               ),
+              const SizedBox(height: 8),
+              Card(
+                child: ListTile(
+                  leading: const Icon(Icons.settings_suggest_outlined),
+                  title: const Text('华为应用启动管理'),
+                  subtitle: const Text('华为设备请关闭自动管理，并启用“允许后台活动”；再在多任务界面锁定本应用。'),
+                  trailing: const Icon(Icons.open_in_new_outlined),
+                  onTap: () async {
+                    try {
+                      await NotificationService.instance
+                          .openHuaweiAppLaunchSettings();
+                    } catch (error) {
+                      if (context.mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(content: Text(error.toString())),
+                        );
+                      }
+                    }
+                  },
+                ),
+              ),
               const SizedBox(height: 24),
               Text('主题外观', style: Theme.of(context).textTheme.titleMedium),
               const SizedBox(height: 8),
@@ -4118,6 +4139,18 @@ class NotificationService {
     }
   }
 
+  Future<void> openHuaweiAppLaunchSettings() async {
+    try {
+      await _systemNotificationChannel.invokeMethod<bool>(
+        'openHuaweiAppLaunchSettings',
+      );
+    } on PlatformException {
+      throw const FormatException('无法打开华为应用启动管理，请在系统设置中搜索“应用启动管理”。');
+    } on MissingPluginException {
+      throw const FormatException('当前设备不支持直接打开华为应用启动管理。');
+    }
+  }
+
   Future<Map<String, dynamic>> launchWearableManager(String brand) async {
     try {
       final result = await _systemNotificationChannel
@@ -4216,6 +4249,7 @@ class BackgroundNovelSender {
         eventAction: ForegroundTaskEventAction.repeat(intervalMilliseconds),
         autoRunOnBoot: true,
         autoRunOnMyPackageReplaced: true,
+        allowAutoRestart: true,
         allowWakeLock: true,
         allowWifiLock: false,
         stopWithTask: false,
