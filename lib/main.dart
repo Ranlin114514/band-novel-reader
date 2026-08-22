@@ -4,6 +4,7 @@ import 'dart:math' as math;
 import 'dart:ui';
 
 import 'package:file_picker/file_picker.dart';
+import 'package:dynamic_color/dynamic_color.dart' show DynamicColorBuilder;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
@@ -60,9 +61,10 @@ class AppThemeController extends ChangeNotifier {
 
   static final instance = AppThemeController._();
   AppThemePreference _preference = AppThemePreference.system;
+  bool _dynamicColorEnabled = false;
 
   AppThemePreference get preference => _preference;
-
+  bool get dynamicColorEnabled => _dynamicColorEnabled;
   ThemeMode get themeMode => switch (_preference) {
     AppThemePreference.system => ThemeMode.system,
     AppThemePreference.light => ThemeMode.light,
@@ -72,6 +74,7 @@ class AppThemeController extends ChangeNotifier {
   Future<void> load() async {
     final index = await LocalAppStore.instance.loadThemePreference();
     _preference = AppThemePreference.values[index.clamp(0, 2)];
+    _dynamicColorEnabled = await LocalAppStore.instance.isDynamicColorEnabled();
   }
 
   Future<void> setPreference(AppThemePreference preference) async {
@@ -81,6 +84,15 @@ class AppThemeController extends ChangeNotifier {
     _preference = preference;
     notifyListeners();
     await LocalAppStore.instance.saveThemePreference(preference.index);
+  }
+
+  Future<void> setDynamicColorEnabled(bool enabled) async {
+    if (_dynamicColorEnabled == enabled) {
+      return;
+    }
+    _dynamicColorEnabled = enabled;
+    notifyListeners();
+    await LocalAppStore.instance.saveDynamicColorEnabled(enabled);
   }
 }
 
@@ -152,18 +164,37 @@ class NovelNotifierApp extends StatelessWidget {
   final AppThemeController themeController;
   final bool startupScreenEnabled;
 
-  ThemeData _buildTheme(Brightness brightness) {
+  ThemeData _buildTheme(Brightness brightness, {ColorScheme? colorScheme}) {
+    final scheme =
+        colorScheme ??
+        ColorScheme.fromSeed(
+          seedColor: const Color(0xFF0B6B69),
+          brightness: brightness,
+        );
     return ThemeData(
-      colorScheme: ColorScheme.fromSeed(
-        seedColor: const Color(0xFF0B6B69),
-        brightness: brightness,
-      ),
+      colorScheme: scheme,
       useMaterial3: true,
+      scaffoldBackgroundColor: scheme.surface,
+      appBarTheme: AppBarTheme(
+        backgroundColor: scheme.surface,
+        foregroundColor: scheme.onSurface,
+        surfaceTintColor: scheme.surfaceTint,
+        elevation: 0,
+        scrolledUnderElevation: 3,
+      ),
       cardTheme: CardThemeData(
         clipBehavior: Clip.antiAlias,
+        color: scheme.surfaceContainerLow,
+        surfaceTintColor: scheme.surfaceTint,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
       ),
+      listTileTheme: ListTileThemeData(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+      ),
       inputDecorationTheme: InputDecorationTheme(
+        filled: true,
+        fillColor: scheme.surfaceContainerHighest,
         border: OutlineInputBorder(borderRadius: BorderRadius.circular(16)),
         enabledBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(16),
@@ -172,6 +203,11 @@ class NovelNotifierApp extends StatelessWidget {
           borderRadius: BorderRadius.circular(16),
         ),
         alignLabelWithHint: true,
+      ),
+      progressIndicatorTheme: ProgressIndicatorThemeData(
+        color: scheme.primary,
+        linearTrackColor: scheme.surfaceContainerHighest,
+        linearMinHeight: 8,
       ),
       filledButtonTheme: FilledButtonThemeData(
         style: FilledButton.styleFrom(
@@ -213,20 +249,32 @@ class NovelNotifierApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return AnimatedBuilder(
       animation: themeController,
-      builder: (context, _) {
-        return MaterialApp(
-          title: '小说通知阅读器',
-          debugShowCheckedModeBanner: false,
-          themeMode: themeController.themeMode,
-          theme: _buildTheme(Brightness.light),
-          darkTheme: _buildTheme(Brightness.dark),
-          themeAnimationDuration: const Duration(milliseconds: 360),
-          themeAnimationCurve: Curves.easeOutCubic,
-          home: startupScreenEnabled
-              ? const StartupQuotePage()
-              : const LibraryHomePage(),
-        );
-      },
+      builder: (context, _) => DynamicColorBuilder(
+        builder: (lightDynamic, darkDynamic) {
+          final useDynamic =
+              themeController.dynamicColorEnabled &&
+              lightDynamic != null &&
+              darkDynamic != null;
+          return MaterialApp(
+            title: '手环通知小说',
+            debugShowCheckedModeBanner: false,
+            themeMode: themeController.themeMode,
+            theme: _buildTheme(
+              Brightness.light,
+              colorScheme: useDynamic ? lightDynamic : null,
+            ),
+            darkTheme: _buildTheme(
+              Brightness.dark,
+              colorScheme: useDynamic ? darkDynamic : null,
+            ),
+            themeAnimationDuration: const Duration(milliseconds: 360),
+            themeAnimationCurve: Curves.easeOutCubic,
+            home: startupScreenEnabled
+                ? const StartupQuotePage()
+                : const LibraryHomePage(),
+          );
+        },
+      ),
     );
   }
 }
@@ -504,8 +552,11 @@ class _NovelHomePageState extends State<NovelHomePage> {
     }
     final adjustedChunks = await Navigator.of(context).push<List<String>>(
       MaterialPageRoute(
-        builder: (_) =>
-            SegmentPreviewPage(chunks: chunks, maxCharacters: _maxCharacters),
+        builder: (_) => SegmentPreviewPage(
+          chunks: chunks,
+          maxCharacters: _maxCharacters,
+          completedCount: _resumeSession?.nextIndex ?? 0,
+        ),
       ),
     );
     if (adjustedChunks == null || !mounted) {
@@ -871,8 +922,30 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
       _isBackgroundRunning = isRunning;
       _isLoading = false;
     });
+    if (session?.canResume == true && !isRunning) {
+      unawaited(_recoverBackgroundSession(session!));
+    }
     if (!onboardingCompleted) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _openOnboarding());
+    }
+  }
+
+  Future<void> _recoverBackgroundSession(StoredSendingSession session) async {
+    if (session.nextIndex >= session.chunks.length || session.chunks.isEmpty) {
+      return;
+    }
+    try {
+      await BackgroundNovelSender.start(
+        chunks: session.chunks,
+        intervalMilliseconds: session.intervalMilliseconds,
+        startIndex: session.nextIndex,
+        notificationBaseId: session.notificationBaseId,
+      );
+      if (mounted) {
+        setState(() => _isBackgroundRunning = true);
+      }
+    } catch (_) {
+      // The resumable session is retained for a later foreground restart.
     }
   }
 
@@ -1211,8 +1284,11 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
     }
     final adjusted = await Navigator.of(context).push<List<String>>(
       MaterialPageRoute(
-        builder: (_) =>
-            SegmentPreviewPage(chunks: chunks, maxCharacters: _maxCharacters),
+        builder: (_) => SegmentPreviewPage(
+          chunks: chunks,
+          maxCharacters: _maxCharacters,
+          completedCount: _session?.nextIndex ?? 0,
+        ),
       ),
     );
     if (adjusted == null || !mounted) {
@@ -1633,15 +1709,7 @@ class _HomeProgressCard extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 12),
-            ClipRRect(
-              borderRadius: BorderRadius.circular(10),
-              child: LinearProgressIndicator(
-                value: progress,
-                minHeight: 14,
-                color: theme.colorScheme.primary,
-                backgroundColor: theme.colorScheme.surfaceContainerHighest,
-              ),
-            ),
+            LinearProgressIndicator(value: progress),
             const SizedBox(height: 10),
             Text(
               '已发送 ${session.nextIndex}/${session.chunks.length} 段 · 剩余 ${session.chunks.length - session.nextIndex} 段',
@@ -2638,6 +2706,29 @@ class _UnifiedSettingsPageState extends State<UnifiedSettingsPage> {
                   onChanged: _setStartupScreenEnabled,
                 ),
               ),
+              const SizedBox(height: 12),
+              Card(
+                child: ListTile(
+                  leading: const Icon(Icons.battery_saver_outlined),
+                  title: const Text('后台发送保护'),
+                  subtitle: const Text(
+                    '后台模式使用前台服务、唤醒锁和恢复会话。若系统仍清理应用，可在电池设置中允许后台运行。',
+                  ),
+                  trailing: const Icon(Icons.open_in_new_outlined),
+                  onTap: () async {
+                    try {
+                      await NotificationService.instance
+                          .openBatteryOptimizationSettings();
+                    } catch (error) {
+                      if (context.mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(content: Text(error.toString())),
+                        );
+                      }
+                    }
+                  },
+                ),
+              ),
               const SizedBox(height: 24),
               Text('主题外观', style: Theme.of(context).textTheme.titleMedium),
               const SizedBox(height: 8),
@@ -2678,6 +2769,22 @@ class _UnifiedSettingsPageState extends State<UnifiedSettingsPage> {
                         },
                       ),
                     ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              Card(
+                child: SwitchListTile.adaptive(
+                  secondary: const Icon(Icons.palette_outlined),
+                  title: const Text('使用系统动态配色（莫奈）'),
+                  subtitle: Text(
+                    AppThemeController.instance.dynamicColorEnabled
+                        ? '已启用：Android 12 及以上使用壁纸与系统配色；不支持时自动使用应用默认配色。'
+                        : '关闭：始终使用应用默认的 Material 3 配色。',
+                  ),
+                  value: AppThemeController.instance.dynamicColorEnabled,
+                  onChanged: (enabled) => unawaited(
+                    AppThemeController.instance.setDynamicColorEnabled(enabled),
                   ),
                 ),
               ),
@@ -2964,11 +3071,12 @@ class SegmentPreviewPage extends StatefulWidget {
   const SegmentPreviewPage({
     required this.chunks,
     required this.maxCharacters,
+    this.completedCount = 0,
     super.key,
   });
-
   final List<String> chunks;
   final int maxCharacters;
+  final int completedCount;
 
   @override
   State<SegmentPreviewPage> createState() => _SegmentPreviewPageState();
@@ -2990,6 +3098,7 @@ class _SegmentPreviewPageState extends State<SegmentPreviewPage> {
         builder: (_) => BatchSegmentAdjustPage(
           chunks: _chunks,
           initialMaxCharacters: widget.maxCharacters,
+          completedCount: widget.completedCount,
         ),
       ),
     );
@@ -3059,21 +3168,40 @@ class _SegmentPreviewPageState extends State<SegmentPreviewPage> {
                 );
               }
               final chunk = _chunks[index - 1];
+              final completed = index <= widget.completedCount;
               return Card(
                 margin: const EdgeInsets.only(bottom: 12),
-                child: Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        '通知片段 $index/${_chunks.length} · ${chunk.runes.length} 字',
-                        style: Theme.of(context).textTheme.labelLarge,
+                child: Stack(
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            '通知片段 $index/${_chunks.length} · ${chunk.runes.length} 字',
+                            style: Theme.of(context).textTheme.labelLarge,
+                          ),
+                          const Divider(height: 24),
+                          SelectableText(chunk),
+                        ],
                       ),
-                      const Divider(height: 24),
-                      SelectableText(chunk),
-                    ],
-                  ),
+                    ),
+                    if (completed)
+                      Positioned(
+                        top: 10,
+                        right: 10,
+                        child: Semantics(
+                          label: '该通知片段已完成发送',
+                          child: Badge(
+                            backgroundColor: Theme.of(context)
+                                .colorScheme
+                                .primary,
+                            label: const Icon(Icons.check, size: 14),
+                          ),
+                        ),
+                      ),
+                  ],
                 ),
               );
             },
@@ -3088,11 +3216,12 @@ class BatchSegmentAdjustPage extends StatefulWidget {
   const BatchSegmentAdjustPage({
     required this.chunks,
     required this.initialMaxCharacters,
+    required this.completedCount,
     super.key,
   });
-
   final List<String> chunks;
   final int initialMaxCharacters;
+  final int completedCount;
 
   @override
   State<BatchSegmentAdjustPage> createState() => _BatchSegmentAdjustPageState();
@@ -3198,7 +3327,9 @@ class _BatchSegmentAdjustPageState extends State<BatchSegmentAdjustPage> {
             Card(
               child: Padding(
                 padding: const EdgeInsets.all(16),
-                child: Text('将重排第 $_start 至第 $_end 段，采用 $_limit 字/段。'),
+                child: Text(
+                  '将重排第 $_start 至第 $_end 段，采用 $_limit 字/段。已完成 ${widget.completedCount.clamp(0, widget.chunks.length)} 段会以勾选状态保留在完整分段预览中。',
+                ),
               ),
             ),
             const SizedBox(height: 16),
@@ -3498,17 +3629,7 @@ class _SendingTaskPageState extends State<SendingTaskPage> {
                         Semantics(
                           label:
                               '发送进度 ${(progress * 100).toStringAsFixed(2)}%，已发送 $_sent，共 ${widget.chunks.length} 段',
-                          child: ClipRRect(
-                            borderRadius: BorderRadius.circular(8),
-                            child: LinearProgressIndicator(
-                              value: progress,
-                              minHeight: 14,
-                              color: Theme.of(context).colorScheme.primary,
-                              backgroundColor: Theme.of(context)
-                                  .colorScheme
-                                  .surfaceContainerHighest,
-                            ),
-                          ),
+                          child: LinearProgressIndicator(value: progress),
                         ),
                         const SizedBox(height: 12),
                         Row(
@@ -3688,6 +3809,18 @@ class NotificationService {
     }
   }
 
+  Future<void> openBatteryOptimizationSettings() async {
+    try {
+      await _systemNotificationChannel.invokeMethod<bool>(
+        'openBatteryOptimizationSettings',
+      );
+    } on PlatformException {
+      throw const FormatException('无法打开电池优化设置，请在系统设置中手动允许本应用后台运行。');
+    } on MissingPluginException {
+      throw const FormatException('当前设备不支持直接打开电池优化设置。');
+    }
+  }
+
   Future<Map<String, dynamic>> launchWearableManager(String brand) async {
     try {
       final result = await _systemNotificationChannel
@@ -3784,8 +3917,8 @@ class BackgroundNovelSender {
       ),
       foregroundTaskOptions: ForegroundTaskOptions(
         eventAction: ForegroundTaskEventAction.repeat(intervalMilliseconds),
-        autoRunOnBoot: false,
-        autoRunOnMyPackageReplaced: false,
+        autoRunOnBoot: true,
+        autoRunOnMyPackageReplaced: true,
         allowWakeLock: true,
         allowWifiLock: false,
         stopWithTask: false,

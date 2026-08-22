@@ -56,8 +56,26 @@ class MainActivity : FlutterActivity() {
                 startActivity(intent)
                 result.success(true)
             }
+            "openBatteryOptimizationSettings" -> openBatteryOptimizationSettings(result)
             "launchWearableManager" -> launchWearableManager(call, result)
             else -> result.notImplemented()
+        }
+    }
+
+    private fun openBatteryOptimizationSettings(result: MethodChannel.Result) {
+        try {
+            val directIntent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                data = Uri.parse("package:$packageName")
+            }
+            startActivity(directIntent)
+            result.success(true)
+        } catch (_: Exception) {
+            try {
+                startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                result.success(true)
+            } catch (error: Exception) {
+                result.error("battery_settings_unavailable", "无法打开电池优化设置：${error.message}", null)
+            }
         }
     }
 

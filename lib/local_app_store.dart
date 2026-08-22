@@ -109,6 +109,7 @@ class LocalAppStore {
       'wearable_preset_max_characters';
   static const _themePreferenceKey = 'app_theme_preference';
   static const _startupScreenEnabledKey = 'startup_screen_enabled';
+  static const _dynamicColorEnabledKey = 'dynamic_color_enabled';
   static const _modeIndexKey = 'sending_mode_index';
   static const _intervalMillisecondsKey = 'sending_interval_milliseconds';
   static const _legacyIntervalSecondsKey = 'sending_interval_seconds';
@@ -298,6 +299,16 @@ class LocalAppStore {
   Future<void> saveStartupScreenEnabled(bool enabled) async {
     final preferences = await SharedPreferences.getInstance();
     await preferences.setBool(_startupScreenEnabledKey, enabled);
+  }
+
+  Future<bool> isDynamicColorEnabled() async {
+    final preferences = await SharedPreferences.getInstance();
+    return preferences.getBool(_dynamicColorEnabledKey) ?? false;
+  }
+
+  Future<void> saveDynamicColorEnabled(bool enabled) async {
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.setBool(_dynamicColorEnabledKey, enabled);
   }
 
   Future<void> _saveSettings(
