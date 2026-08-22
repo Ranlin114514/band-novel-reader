@@ -2733,7 +2733,7 @@ class _UnifiedSettingsPageState extends State<UnifiedSettingsPage> {
                   leading: const Icon(Icons.battery_saver_outlined),
                   title: const Text('后台发送保护'),
                   subtitle: const Text(
-                    '后台模式使用前台服务、唤醒锁和恢复会话。若系统仍清理应用，可在电池设置中允许后台运行。',
+                    '后台模式使用前台服务、唤醒锁和恢复会话。华为设备请在“应用启动管理”关闭自动管理并允许后台活动，再在多任务界面锁定本应用；可点此打开电池优化设置。',
                   ),
                   trailing: const Icon(Icons.open_in_new_outlined),
                   onTap: () async {
