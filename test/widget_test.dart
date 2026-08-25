@@ -104,6 +104,37 @@ void main() {
   });
 
   group('NetworkBookImporter', () {
+    test('API 验证可携带授权并解析 JSON 图书响应', () async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      const text = '这是由 API JSON 响应返回的完整图书正文，用于验证授权、连通性和可导入内容。';
+      server.listen((request) async {
+        expect(
+          request.headers.value('authorization'),
+          'Bearer verification-token',
+        );
+        final body = jsonEncode({'title': 'API 验证图书', 'content': text});
+        final bytes = utf8.encode(body);
+        request.response.headers.contentType = ContentType(
+          'application',
+          'json',
+          charset: 'utf-8',
+        );
+        request.response.contentLength = bytes.length;
+        request.response.add(bytes);
+        await request.response.close();
+      });
+      addTearDown(server.close);
+
+      final downloaded = await NetworkBookImporter.downloadWithProgress(
+        url: 'http://${server.address.address}:${server.port}/book.json',
+        titleFallback: '回退书名',
+        authorization: 'Bearer verification-token',
+      );
+
+      expect(downloaded.title, 'API 验证图书');
+      expect(downloaded.text, text);
+    });
+
     test('流式下载报告进度并在完整文本校验后返回图书', () async {
       final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
       const text = '这是用于验证下载完整性与流式进度回调的公共领域测试正文，长度超过最小正文限制。';

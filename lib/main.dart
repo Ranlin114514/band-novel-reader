@@ -1266,20 +1266,12 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
       title: settings.title,
       authorization: settings.authorization,
     );
-    final confirmed = await Navigator.of(context).push<bool>(
-      MaterialPageRoute(
-        builder: (_) => NetworkApiImportDetailPage(request: request),
-      ),
-    );
-    if (confirmed != true || !mounted) {
-      return;
-    }
     setState(() => _isCatalogImporting = true);
     try {
       await Navigator.of(context).push<bool>(
         MaterialPageRoute(
           fullscreenDialog: true,
-          builder: (_) => CatalogBookDownloadPage.forApi(
+          builder: (_) => NetworkApiImportDetailPage(
             request: request,
             onImport: _importCatalogBook,
           ),
@@ -4796,24 +4788,170 @@ class _NetworkApiSettingsPageState extends State<NetworkApiSettingsPage> {
   }
 }
 
-class NetworkApiImportDetailPage extends StatelessWidget {
-  const NetworkApiImportDetailPage({required this.request, super.key});
+class NetworkApiImportDetailPage extends StatefulWidget {
+  const NetworkApiImportDetailPage({
+    required this.request,
+    required this.onImport,
+    super.key,
+  });
 
   final NetworkImportRequest request;
+  final Future<void> Function(DownloadedNetworkBook book) onImport;
 
-  String get _title =>
-      request.title.trim().isEmpty ? '网络图书' : request.title.trim();
+  @override
+  State<NetworkApiImportDetailPage> createState() =>
+      _NetworkApiImportDetailPageState();
+}
+
+class _NetworkApiImportDetailPageState
+    extends State<NetworkApiImportDetailPage> {
+  DownloadCancellationToken _cancellationToken = DownloadCancellationToken();
+  DownloadProgress? _progress;
+  DownloadedNetworkBook? _verifiedBook;
+  String _stage = '尚未验证 API 可用性。';
+  String? _errorMessage;
+  bool _isVerifying = false;
+  bool _isImporting = false;
+
+  bool get _isBusy => _isVerifying || _isImporting;
+
+  String get _configuredTitle => widget.request.title.trim().isEmpty
+      ? '网络图书'
+      : widget.request.title.trim();
+
+  String get _host =>
+      Uri.tryParse(widget.request.url)?.host ?? widget.request.url;
+
+  String _formatBytes(int bytes) {
+    if (bytes < 1024) return '$bytes B';
+    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+    return '${(bytes / (1024 * 1024)).toStringAsFixed(2)} MB';
+  }
+
+  Future<void> _verifyApi() async {
+    if (_isBusy) return;
+    if (_cancellationToken.isCancelled) {
+      _cancellationToken = DownloadCancellationToken();
+    }
+    setState(() {
+      _isVerifying = true;
+      _verifiedBook = null;
+      _progress = null;
+      _errorMessage = null;
+      _stage = '正在连接 API 并验证可用性…';
+    });
+    try {
+      final book = await NetworkBookImporter.downloadWithProgress(
+        url: widget.request.url,
+        titleFallback: widget.request.title,
+        authorization: widget.request.authorization,
+        cancellationToken: _cancellationToken,
+        onProgress: (progress) {
+          if (!mounted) return;
+          setState(() {
+            _progress = progress;
+            final fraction = progress.fraction;
+            _stage = fraction == null
+                ? '正在下载并验证响应…'
+                : '正在下载并验证响应 ${(fraction * 100).toStringAsFixed(1)}%';
+          });
+        },
+      );
+      if (!mounted) return;
+      setState(() {
+        _isVerifying = false;
+        _verifiedBook = book;
+        _stage = 'API 可用，响应与正文完整性校验通过。请查看结果并确认导入。';
+      });
+    } on DownloadCancelledException {
+      if (mounted) {
+        setState(() {
+          _isVerifying = false;
+          _stage = '验证已取消。';
+          _errorMessage = 'API 验证已取消，未将任何内容写入本地书库。';
+        });
+      }
+    } on FormatException catch (error) {
+      if (mounted) {
+        setState(() {
+          _isVerifying = false;
+          _stage = 'API 不可用于导入。';
+          _errorMessage = error.message.toString();
+        });
+      }
+    } catch (error) {
+      if (mounted) {
+        setState(() {
+          _isVerifying = false;
+          _stage = 'API 验证失败。';
+          _errorMessage = '无法连接或验证 API：$error';
+        });
+      }
+    }
+  }
+
+  Future<void> _confirmImport() async {
+    final book = _verifiedBook;
+    if (book == null || _isBusy) return;
+    setState(() {
+      _isImporting = true;
+      _errorMessage = null;
+      _stage = '正在导入本地书库并自动选中图书…';
+    });
+    try {
+      await widget.onImport(book);
+      if (!mounted) return;
+      setState(() {
+        _isImporting = false;
+        _stage = '已完成验证并导入《${book.title}》。';
+      });
+    } on FormatException catch (error) {
+      if (mounted) {
+        setState(() {
+          _isImporting = false;
+          _errorMessage = error.message.toString();
+          _stage = '导入未完成。';
+        });
+      }
+    } catch (error) {
+      if (mounted) {
+        setState(() {
+          _isImporting = false;
+          _errorMessage = '导入本地书库失败：$error';
+          _stage = '导入未完成。';
+        });
+      }
+    }
+  }
+
+  void _cancelVerification() {
+    if (_isVerifying) {
+      _cancellationToken.cancel();
+      setState(() => _stage = '正在取消 API 验证…');
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
-    final host = Uri.tryParse(request.url)?.host;
-    return Scaffold(
-      appBar: AppBar(title: const Text('查看 API 导入详情')),
-      body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(20),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
+    final book = _verifiedBook;
+    final progress = _progress;
+    final fraction = progress?.fraction;
+    final colorScheme = Theme.of(context).colorScheme;
+    final isImported =
+        book != null &&
+        !_isBusy &&
+        _errorMessage == null &&
+        _stage.startsWith('已完成验证并导入');
+    return PopScope(
+      canPop: !_isBusy,
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('API 导入流程'),
+          automaticallyImplyLeading: !_isBusy,
+        ),
+        body: SafeArea(
+          child: ListView(
+            padding: const EdgeInsets.all(20),
             children: [
               Card(
                 child: Padding(
@@ -4822,21 +4960,19 @@ class NetworkApiImportDetailPage extends StatelessWidget {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        _title,
+                        _configuredTitle,
                         style: Theme.of(context).textTheme.titleLarge,
                       ),
                       const SizedBox(height: 8),
-                      Text(
-                        '来源：${host == null || host.isEmpty ? request.url : host}',
-                      ),
+                      Text('来源：$_host'),
                       const SizedBox(height: 8),
                       Text(
-                        'API 地址：${request.url}',
+                        'API 地址：${widget.request.url}',
                         style: Theme.of(context).textTheme.bodySmall,
                       ),
                       const SizedBox(height: 8),
                       Text(
-                        request.authorization.trim().isEmpty
+                        widget.request.authorization.trim().isEmpty
                             ? 'Authorization：未配置'
                             : 'Authorization：已配置（为保护凭据不显示内容）',
                         style: Theme.of(context).textTheme.bodySmall,
@@ -4846,25 +4982,108 @@ class NetworkApiImportDetailPage extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 16),
-              Card(
-                child: const Padding(
-                  padding: EdgeInsets.all(16),
-                  child: Text(
-                    '确认后将依次执行：下载进度显示、响应与内容完整性校验、自动导入本地书库并选中新书。若失败，不会写入书库。',
+              Text(
+                _stage,
+                style: Theme.of(context).textTheme.titleMedium,
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 16),
+              if (_isVerifying || _isImporting) ...[
+                LinearProgressIndicator(value: _isImporting ? null : fraction),
+                const SizedBox(height: 8),
+                Text(
+                  progress == null
+                      ? '正在准备验证…'
+                      : fraction == null
+                      ? '已接收 ${_formatBytes(progress.receivedBytes)}'
+                      : '${_formatBytes(progress.receivedBytes)} / ${_formatBytes(progress.totalBytes!)}  ${(fraction * 100).toStringAsFixed(1)}%',
+                  textAlign: TextAlign.center,
+                ),
+              ],
+              if (book != null) ...[
+                const SizedBox(height: 16),
+                Card(
+                  color: colorScheme.secondaryContainer,
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'API 验证结果',
+                          style: Theme.of(context).textTheme.titleSmall,
+                        ),
+                        const SizedBox(height: 8),
+                        Text('书名：${book.title}'),
+                        Text(
+                          '有效正文：${book.text.runes.length} 个字符 · ${_formatBytes(book.byteLength)}',
+                        ),
+                        const SizedBox(height: 8),
+                        const Text(
+                          '✓ HTTP 成功响应与非 HTML 文本\n✓ 流式长度、UTF-8 和有效正文校验通过',
+                        ),
+                        const SizedBox(height: 10),
+                        Text(
+                          '正文预览',
+                          style: Theme.of(context).textTheme.labelLarge,
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          book.text.runes.take(240).join() +
+                              (book.text.runes.length > 240 ? '…' : ''),
+                          maxLines: 6,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ],
+                    ),
                   ),
                 ),
-              ),
-              const Spacer(),
-              OutlinedButton(
-                onPressed: () => Navigator.of(context).pop(false),
-                child: const Text('返回'),
-              ),
-              const SizedBox(height: 12),
-              FilledButton.icon(
-                onPressed: () => Navigator.of(context).pop(true),
-                icon: const Icon(Icons.download_outlined),
-                label: const Text('确认下载并导入'),
-              ),
+              ],
+              if (_errorMessage != null) ...[
+                const SizedBox(height: 16),
+                Card(
+                  color: colorScheme.errorContainer,
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Text(
+                      _errorMessage!,
+                      style: TextStyle(color: colorScheme.onErrorContainer),
+                    ),
+                  ),
+                ),
+              ],
+              const SizedBox(height: 24),
+              if (_isVerifying)
+                OutlinedButton.icon(
+                  onPressed: _cancelVerification,
+                  icon: const Icon(Icons.cancel_outlined),
+                  label: const Text('取消验证'),
+                )
+              else if (isImported)
+                FilledButton.icon(
+                  onPressed: () => Navigator.of(context).pop(true),
+                  icon: const Icon(Icons.library_books_outlined),
+                  label: const Text('返回书库'),
+                )
+              else if (book != null)
+                FilledButton.icon(
+                  onPressed: _confirmImport,
+                  icon: const Icon(Icons.download_done_outlined),
+                  label: const Text('确认导入本地书库'),
+                )
+              else
+                FilledButton.icon(
+                  onPressed: _verifyApi,
+                  icon: const Icon(Icons.verified_outlined),
+                  label: const Text('验证 API 并查看内容'),
+                ),
+              if (!_isBusy && !isImported) ...[
+                const SizedBox(height: 10),
+                OutlinedButton(
+                  onPressed: () => Navigator.of(context).pop(false),
+                  child: const Text('返回导入界面'),
+                ),
+              ],
             ],
           ),
         ),
