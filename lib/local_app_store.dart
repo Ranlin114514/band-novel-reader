@@ -493,10 +493,19 @@ class LocalAppStore {
     return 1000;
   }
 
-  Future<void> updateSendingProgress(int nextIndex) async {
+  Future<void> updateSendingProgress(
+    int nextIndex, {
+    String? expectedBookId,
+  }) async {
     final preferences = await SharedPreferences.getInstance();
-    await preferences.setInt(_sessionNextIndexKey, nextIndex);
     final active = await loadSendingSession();
+    if (expectedBookId != null && active?.bookId != expectedBookId) {
+      return;
+    }
+    await preferences.setInt(
+      _sessionNextIndexKey,
+      nextIndex.clamp(0, active?.chunks.length ?? nextIndex).toInt(),
+    );
     final bookId = active?.bookId;
     if (active != null && bookId != null) {
       final sessions = await loadSendingSessions();
@@ -517,8 +526,11 @@ class LocalAppStore {
     }
   }
 
-  Future<void> clearActiveSendingSession() async {
+  Future<void> clearActiveSendingSession({String? expectedBookId}) async {
     final active = await loadSendingSession();
+    if (expectedBookId != null && active?.bookId != expectedBookId) {
+      return;
+    }
     final bookId = active?.bookId;
     if (bookId == null) {
       await clearSendingSession();

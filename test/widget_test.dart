@@ -1,10 +1,12 @@
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:novelnotifier/book_metadata.dart';
 import 'package:novelnotifier/local_app_store.dart';
 import 'package:novelnotifier/main.dart';
+import 'package:novelnotifier/network_book_importer.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
@@ -101,6 +103,35 @@ void main() {
     });
   });
 
+  group('NetworkBookImporter', () {
+    test('流式下载报告进度并在完整文本校验后返回图书', () async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      const text = '这是用于验证下载完整性与流式进度回调的公共领域测试正文，长度超过最小正文限制。';
+      server.listen((request) {
+        final bytes = utf8.encode(text);
+        request.response.headers.contentType = ContentType('text', 'plain', charset: 'utf-8');
+        request.response.contentLength = bytes.length;
+        request.response.add(bytes);
+        request.response.close();
+      });
+      addTearDown(server.close);
+
+      final progress = <DownloadProgress>[];
+      final downloaded = await NetworkBookImporter.downloadWithProgress(
+        url: 'http://${server.address.address}:${server.port}/book.txt',
+        titleFallback: '本地测试图书',
+        onProgress: progress.add,
+      );
+
+      expect(downloaded.title, '本地测试图书');
+      expect(downloaded.text, text);
+      expect(downloaded.byteLength, utf8.encode(text).length);
+      expect(progress, isNotEmpty);
+      expect(progress.last.receivedBytes, utf8.encode(text).length);
+      expect(progress.last.fraction, 1.0);
+    });
+  });
+
   group('LocalAppStore', () {
     setUp(() {
       SharedPreferences.setMockInitialValues({});
@@ -159,6 +190,41 @@ void main() {
       expect(library.books.map((book) => book.id), ['book-one', 'book-two']);
       expect(library.selectedBookId, 'book-two');
       expect(library.books.last.customChunks, const ['第二本', '正文']);
+    });
+
+    test('不匹配书本标识的进度与清理不会影响活动会话', () async {
+      await LocalAppStore.instance.saveSendingSession(
+        bookId: 'book-one',
+        chunks: const ['第一段', '第二段'],
+        nextIndex: 0,
+        modeIndex: 1,
+        intervalMilliseconds: 1000,
+        notificationBaseId: 88,
+      );
+
+      await LocalAppStore.instance.updateSendingProgress(
+        1,
+        expectedBookId: 'book-two',
+      );
+      expect((await LocalAppStore.instance.loadSendingSession())?.nextIndex, 0);
+
+      await LocalAppStore.instance.clearActiveSendingSession(
+        expectedBookId: 'book-two',
+      );
+      expect(
+        (await LocalAppStore.instance.loadSendingSession())?.bookId,
+        'book-one',
+      );
+
+      await LocalAppStore.instance.updateSendingProgress(
+        1,
+        expectedBookId: 'book-one',
+      );
+      expect((await LocalAppStore.instance.loadSendingSession())?.nextIndex, 1);
+      await LocalAppStore.instance.clearActiveSendingSession(
+        expectedBookId: 'book-one',
+      );
+      expect(await LocalAppStore.instance.loadSendingSession(), isNull);
     });
 
     test('完成后清除断点不会影响已保存书籍', () async {
