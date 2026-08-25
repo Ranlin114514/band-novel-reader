@@ -1182,12 +1182,18 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
             children: [
               Text('导入图书', style: Theme.of(sheetContext).textTheme.titleLarge),
               const SizedBox(height: 8),
-              const Text('本地文件可在此导入。网络 API 与开源图书目录统一在“设置 → 网络图书导入”中管理。'),
+              const Text('请选择图书来源。网络导入可选择已在设置页配置的 API，或搜索公共领域开源书源。'),
               const SizedBox(height: 16),
               FilledButton.icon(
                 onPressed: () => Navigator.of(sheetContext).pop('local'),
                 icon: const Icon(Icons.file_open_outlined),
                 label: const Text('本地导入图书（TXT / EPUB 等）'),
+              ),
+              const SizedBox(height: 10),
+              OutlinedButton.icon(
+                onPressed: () => Navigator.of(sheetContext).pop('network'),
+                icon: const Icon(Icons.language_outlined),
+                label: const Text('网络导入图书'),
               ),
             ],
           ),
@@ -1196,107 +1202,93 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
     );
     if (action == 'local') {
       await _importBooks();
+    } else if (action == 'network') {
+      await _showNetworkImportSources();
     }
   }
 
-  Future<void> _importFromNetwork() async {
-    final urlController = TextEditingController();
-    final titleController = TextEditingController();
-    final authorizationController = TextEditingController();
-    final request = await showDialog<NetworkImportRequest>(
+  Future<void> _showNetworkImportSources() async {
+    if (_isCatalogImporting) {
+      _showMessage('网络下载或导入正在进行，请完成或取消当前流程后再试。');
+      return;
+    }
+    final source = await showModalBottomSheet<String>(
       context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('网络导入图书'),
-        content: SingleChildScrollView(
+      showDragHandle: true,
+      builder: (sheetContext) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
           child: Column(
             mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              TextField(
-                controller: urlController,
-                keyboardType: TextInputType.url,
-                decoration: const InputDecoration(
-                  labelText: '图书 API 地址',
-                  hintText: 'https://example.com/book.txt 或 JSON API',
-                ),
+              Text(
+                '网络导入图书',
+                style: Theme.of(sheetContext).textTheme.titleLarge,
               ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: titleController,
-                decoration: const InputDecoration(labelText: '书名（接口未返回时使用）'),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: authorizationController,
-                obscureText: true,
-                decoration: const InputDecoration(
-                  labelText: 'Authorization（可选）',
-                  hintText: '例如 Bearer <token>',
-                ),
+              const SizedBox(height: 8),
+              const Text('请选择来源。两种来源均会先显示详情与确认步骤，再下载、校验并自动导入。'),
+              const SizedBox(height: 16),
+              FilledButton.icon(
+                onPressed: () => Navigator.of(sheetContext).pop('api'),
+                icon: const Icon(Icons.api_outlined),
+                label: const Text('从已配置 API 导入'),
               ),
               const SizedBox(height: 10),
-              const Text(
-                '支持直接返回纯文本，或 JSON 中的 title/name 与 content/text/body 字段。',
+              OutlinedButton.icon(
+                onPressed: () => Navigator.of(sheetContext).pop('catalog'),
+                icon: const Icon(Icons.travel_explore_outlined),
+                label: const Text('搜索开源图书目录'),
               ),
             ],
           ),
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(dialogContext).pop(
-              NetworkImportRequest(
-                url: urlController.text,
-                title: titleController.text,
-                authorization: authorizationController.text,
-              ),
-            ),
-            child: const Text('下载并导入'),
-          ),
-        ],
       ),
     );
-    urlController.dispose();
-    titleController.dispose();
-    authorizationController.dispose();
-    if (request == null) {
+    if (source == 'api') {
+      await _importFromNetwork();
+    } else if (source == 'catalog') {
+      await _searchPublicDomainBooks();
+    }
+  }
+
+  Future<void> _importFromNetwork() async {
+    final settings = await LocalAppStore.instance.loadNetworkImportSettings();
+    if (!mounted) {
       return;
     }
-
+    if (settings.url.trim().isEmpty) {
+      _showMessage('请先在“设置 → API 导入详情”中填写图书 API 地址。');
+      return;
+    }
+    final request = NetworkImportRequest(
+      url: settings.url,
+      title: settings.title,
+      authorization: settings.authorization,
+    );
+    final confirmed = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(
+        builder: (_) => NetworkApiImportDetailPage(request: request),
+      ),
+    );
+    if (confirmed != true || !mounted) {
+      return;
+    }
+    setState(() => _isCatalogImporting = true);
     try {
-      _showMessage('正在下载图书…');
-      final downloaded = await NetworkBookImporter.download(
-        url: request.url,
-        titleFallback: request.title,
-        authorization: request.authorization,
+      await Navigator.of(context).push<bool>(
+        MaterialPageRoute(
+          fullscreenDialog: true,
+          builder: (_) => CatalogBookDownloadPage.forApi(
+            request: request,
+            onImport: _importCatalogBook,
+          ),
+        ),
       );
-      final fileName = '${downloaded.title}.txt';
-      final imported = StoredLibraryBook(
-        id: LocalAppStore.createBookId(fileName, downloaded.text),
-        text: downloaded.text,
-        fileName: fileName,
-        customChunks: null,
-      );
-      final byIdentity = <String, StoredLibraryBook>{
-        for (final book in _books)
-          '${book.fileName}:${book.text.hashCode}': book,
-        '${imported.fileName}:${imported.text.hashCode}': imported,
-      };
-      if (!mounted) {
-        return;
+    } finally {
+      if (mounted) {
+        setState(() => _isCatalogImporting = false);
       }
-      setState(() {
-        _books = byIdentity.values.toList(growable: false);
-        _selectedBookId = imported.id;
-      });
-      await _persistLibrary();
-      _showMessage('已从网络导入《${downloaded.title}》。');
-    } on FormatException catch (error) {
-      _showMessage(error.message.toString());
-    } catch (error) {
-      _showMessage('网络导入失败：$error');
     }
   }
 
@@ -1449,8 +1441,6 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
         builder: (_) => UnifiedSettingsPage(
           initialConfig: _sendingConfig,
           initialMaxCharacters: _maxCharacters,
-          onOpenNetworkApiImport: _importFromNetwork,
-          onOpenPublicCatalogSearch: _searchPublicDomainBooks,
         ),
       ),
     );
@@ -2894,15 +2884,11 @@ class UnifiedSettingsPage extends StatefulWidget {
   const UnifiedSettingsPage({
     required this.initialConfig,
     required this.initialMaxCharacters,
-    this.onOpenNetworkApiImport,
-    this.onOpenPublicCatalogSearch,
     super.key,
   });
 
   final SendingConfig initialConfig;
   final int initialMaxCharacters;
-  final Future<void> Function()? onOpenNetworkApiImport;
-  final Future<void> Function()? onOpenPublicCatalogSearch;
 
   @override
   State<UnifiedSettingsPage> createState() => _UnifiedSettingsPageState();
@@ -3351,59 +3337,29 @@ class _UnifiedSettingsPageState extends State<UnifiedSettingsPage> {
                   ),
                 ),
               ],
-              if (widget.onOpenNetworkApiImport != null ||
-                  widget.onOpenPublicCatalogSearch != null) ...[
-                const SizedBox(height: 24),
-                Text('网络图书导入', style: Theme.of(context).textTheme.titleMedium),
-                const SizedBox(height: 8),
-                Card(
-                  child: Padding(
-                    padding: const EdgeInsets.all(16),
-                    child: Text(
-                      '所有网络导入都在这里统一管理。开源目录流程为：搜索 → 查看详情 → 选择图书 → 下载进度 → 完整性校验 → 自动导入并选中书库图书。',
-                      style: Theme.of(context).textTheme.bodySmall,
-                    ),
+              const SizedBox(height: 24),
+              Text('网络导入设置', style: Theme.of(context).textTheme.titleMedium),
+              const SizedBox(height: 8),
+              Card(
+                child: ListTile(
+                  leading: const Icon(Icons.api_outlined),
+                  title: const Text('API 导入详情'),
+                  subtitle: const Text(
+                    '设置图书 API 地址、书名回退和 Authorization。实际 API 或开源书源导入请从“导入图书 → 网络导入图书”进入。',
                   ),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () async {
+                    await Navigator.of(context).push<void>(
+                      MaterialPageRoute(
+                        builder: (_) => const NetworkApiSettingsPage(),
+                      ),
+                    );
+                    if (mounted) {
+                      setState(() {});
+                    }
+                  },
                 ),
-                const SizedBox(height: 8),
-                Card(
-                  child: ListTile(
-                    leading: const Icon(Icons.api_outlined),
-                    title: const Text('API 地址导入'),
-                    subtitle: const Text(
-                      '导入可访问的纯文本地址，或含 title/name 与 content/text/body 字段的 JSON 接口。',
-                    ),
-                    trailing: const Icon(Icons.chevron_right),
-                    onTap: widget.onOpenNetworkApiImport == null
-                        ? null
-                        : () async {
-                            await widget.onOpenNetworkApiImport!();
-                            if (mounted) {
-                              setState(() {});
-                            }
-                          },
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Card(
-                  child: ListTile(
-                    leading: const Icon(Icons.travel_explore_outlined),
-                    title: const Text('搜索开源图书目录'),
-                    subtitle: const Text(
-                      '搜索 Gutendex / Project Gutenberg 公共领域纯文本图书，可查看详情后确认下载。',
-                    ),
-                    trailing: const Icon(Icons.chevron_right),
-                    onTap: widget.onOpenPublicCatalogSearch == null
-                        ? null
-                        : () async {
-                            await widget.onOpenPublicCatalogSearch!();
-                            if (mounted) {
-                              setState(() {});
-                            }
-                          },
-                  ),
-                ),
-              ],
+              ),
               const SizedBox(height: 24),
               Text('存储与缓存', style: Theme.of(context).textTheme.titleMedium),
               const SizedBox(height: 8),
@@ -4697,15 +4653,255 @@ class BackgroundNovelTaskHandler extends TaskHandler {
   }
 }
 
+class NetworkApiSettingsPage extends StatefulWidget {
+  const NetworkApiSettingsPage({super.key});
+
+  @override
+  State<NetworkApiSettingsPage> createState() => _NetworkApiSettingsPageState();
+}
+
+class _NetworkApiSettingsPageState extends State<NetworkApiSettingsPage> {
+  late final TextEditingController _urlController;
+  late final TextEditingController _titleController;
+  late final TextEditingController _authorizationController;
+  bool _isLoading = true;
+  String? _message;
+
+  @override
+  void initState() {
+    super.initState();
+    _urlController = TextEditingController();
+    _titleController = TextEditingController();
+    _authorizationController = TextEditingController();
+    unawaited(_load());
+  }
+
+  @override
+  void dispose() {
+    _urlController.dispose();
+    _titleController.dispose();
+    _authorizationController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _load() async {
+    final settings = await LocalAppStore.instance.loadNetworkImportSettings();
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _urlController.text = settings.url;
+      _titleController.text = settings.title;
+      _authorizationController.text = settings.authorization;
+      _isLoading = false;
+    });
+  }
+
+  Future<void> _save({bool announce = true}) async {
+    final url = _urlController.text.trim();
+    if (url.isNotEmpty) {
+      final uri = Uri.tryParse(url);
+      if (uri == null || (uri.scheme != 'http' && uri.scheme != 'https')) {
+        if (mounted) {
+          setState(() => _message = '请输入以 http:// 或 https:// 开头的 API 地址。');
+        }
+        return;
+      }
+    }
+    await LocalAppStore.instance.saveNetworkImportSettings(
+      url: url,
+      title: _titleController.text,
+      authorization: _authorizationController.text,
+    );
+    if (mounted && announce) {
+      setState(() => _message = 'API 导入详情已保存。');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('API 导入详情')),
+      body: SafeArea(
+        child: _isLoading
+            ? const Center(child: CircularProgressIndicator())
+            : ListView(
+                padding: const EdgeInsets.all(16),
+                children: [
+                  Card(
+                    child: Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Text(
+                        '此页面只保存 API 导入详情。实际导入请从“导入图书 → 网络导入图书 → 从已配置 API 导入”进入，并在查看详情后确认下载。',
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  TextField(
+                    controller: _urlController,
+                    keyboardType: TextInputType.url,
+                    autocorrect: false,
+                    decoration: const InputDecoration(
+                      labelText: '图书 API 地址',
+                      hintText: 'https://example.com/book.txt 或 JSON API',
+                      prefixIcon: Icon(Icons.link_outlined),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: _titleController,
+                    decoration: const InputDecoration(
+                      labelText: '书名回退（可选）',
+                      helperText: '接口未提供书名时使用；留空时会使用“网络图书”。',
+                      prefixIcon: Icon(Icons.title_outlined),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: _authorizationController,
+                    obscureText: true,
+                    decoration: const InputDecoration(
+                      labelText: 'Authorization（可选）',
+                      hintText: '例如 Bearer <token>',
+                      prefixIcon: Icon(Icons.lock_outline),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Card(
+                    child: const Padding(
+                      padding: EdgeInsets.all(16),
+                      child: Text(
+                        '支持直接返回纯文本，或返回包含 title/name 与 content/text/body 字段的 JSON。导入时会校验响应、正文、UTF-8 解码和文件长度。',
+                      ),
+                    ),
+                  ),
+                  if (_message != null) ...[
+                    const SizedBox(height: 12),
+                    Text(
+                      _message!,
+                      style: Theme.of(context).textTheme.labelMedium,
+                    ),
+                  ],
+                  const SizedBox(height: 20),
+                  FilledButton.icon(
+                    onPressed: _save,
+                    icon: const Icon(Icons.save_outlined),
+                    label: const Text('保存 API 详情'),
+                  ),
+                ],
+              ),
+      ),
+    );
+  }
+}
+
+class NetworkApiImportDetailPage extends StatelessWidget {
+  const NetworkApiImportDetailPage({required this.request, super.key});
+
+  final NetworkImportRequest request;
+
+  String get _title =>
+      request.title.trim().isEmpty ? '网络图书' : request.title.trim();
+
+  @override
+  Widget build(BuildContext context) {
+    final host = Uri.tryParse(request.url)?.host;
+    return Scaffold(
+      appBar: AppBar(title: const Text('查看 API 导入详情')),
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        _title,
+                        style: Theme.of(context).textTheme.titleLarge,
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        '来源：${host == null || host.isEmpty ? request.url : host}',
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        'API 地址：${request.url}',
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        request.authorization.trim().isEmpty
+                            ? 'Authorization：未配置'
+                            : 'Authorization：已配置（为保护凭据不显示内容）',
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+              Card(
+                child: const Padding(
+                  padding: EdgeInsets.all(16),
+                  child: Text(
+                    '确认后将依次执行：下载进度显示、响应与内容完整性校验、自动导入本地书库并选中新书。若失败，不会写入书库。',
+                  ),
+                ),
+              ),
+              const Spacer(),
+              OutlinedButton(
+                onPressed: () => Navigator.of(context).pop(false),
+                child: const Text('返回'),
+              ),
+              const SizedBox(height: 12),
+              FilledButton.icon(
+                onPressed: () => Navigator.of(context).pop(true),
+                icon: const Icon(Icons.download_outlined),
+                label: const Text('确认下载并导入'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class CatalogBookDownloadPage extends StatefulWidget {
   const CatalogBookDownloadPage({
     required this.book,
     required this.onImport,
     super.key,
-  });
+  }) : request = null;
 
-  final PublicDomainBookResult book;
+  const CatalogBookDownloadPage.forApi({
+    required this.request,
+    required this.onImport,
+    super.key,
+  }) : book = null;
+
+  final PublicDomainBookResult? book;
+  final NetworkImportRequest? request;
   final Future<void> Function(DownloadedNetworkBook book) onImport;
+
+  bool get isApiImport => request != null;
+
+  String get title =>
+      book?.title ??
+      (request!.title.trim().isEmpty ? '网络图书' : request!.title.trim());
+
+  String get subtitle {
+    if (book != null) {
+      return book!.author;
+    }
+    return Uri.tryParse(request!.url)?.host ?? request!.url;
+  }
 
   @override
   State<CatalogBookDownloadPage> createState() =>
@@ -4723,6 +4919,8 @@ class _CatalogBookDownloadPageState extends State<CatalogBookDownloadPage> {
 
   bool get _isBusy => _isDownloading || _isImporting;
 
+  String get _sourceLabel => widget.isApiImport ? '已配置 API' : '公共领域图书源';
+
   @override
   void initState() {
     super.initState();
@@ -4739,25 +4937,43 @@ class _CatalogBookDownloadPageState extends State<CatalogBookDownloadPage> {
     setState(() {
       _isDownloading = true;
       _errorMessage = null;
-      _stage = '正在下载《${widget.book.title}》…';
+      _stage = '正在下载《${widget.title}》…';
       _progress = null;
     });
     try {
-      final downloaded = await PublicDomainBookCatalog.downloadWithProgress(
-        widget.book,
-        cancellationToken: _cancellationToken,
-        onProgress: (progress) {
-          if (mounted) {
-            setState(() {
-              _progress = progress;
-              final fraction = progress.fraction;
-              _stage = fraction == null
-                  ? '正在下载图书内容…'
-                  : '正在下载图书内容 ${(fraction * 100).toStringAsFixed(1)}%';
-            });
-          }
-        },
-      );
+      final downloaded = widget.isApiImport
+          ? await NetworkBookImporter.downloadWithProgress(
+              url: widget.request!.url,
+              titleFallback: widget.request!.title,
+              authorization: widget.request!.authorization,
+              cancellationToken: _cancellationToken,
+              onProgress: (progress) {
+                if (mounted) {
+                  setState(() {
+                    _progress = progress;
+                    final fraction = progress.fraction;
+                    _stage = fraction == null
+                        ? '正在下载图书内容…'
+                        : '正在下载图书内容 ${(fraction * 100).toStringAsFixed(1)}%';
+                  });
+                }
+              },
+            )
+          : await PublicDomainBookCatalog.downloadWithProgress(
+              widget.book!,
+              cancellationToken: _cancellationToken,
+              onProgress: (progress) {
+                if (mounted) {
+                  setState(() {
+                    _progress = progress;
+                    final fraction = progress.fraction;
+                    _stage = fraction == null
+                        ? '正在下载图书内容…'
+                        : '正在下载图书内容 ${(fraction * 100).toStringAsFixed(1)}%';
+                  });
+                }
+              },
+            );
       if (!mounted) {
         return;
       }
@@ -4856,11 +5072,11 @@ class _CatalogBookDownloadPageState extends State<CatalogBookDownloadPage> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          widget.book.title,
+                          widget.title,
                           style: Theme.of(context).textTheme.titleLarge,
                         ),
                         const SizedBox(height: 6),
-                        Text(widget.book.author),
+                        Text('$_sourceLabel · ${widget.subtitle}'),
                         const SizedBox(height: 12),
                         Text(
                           '流程：确认下载 → 下载进度 → 完整性校验 → 自动导入本地书库 → 自动选中图书',

@@ -73,6 +73,18 @@ class StoredLibrary {
   final String? selectedBookId;
 }
 
+class StoredNetworkImportSettings {
+  const StoredNetworkImportSettings({
+    required this.url,
+    required this.title,
+    required this.authorization,
+  });
+
+  final String url;
+  final String title;
+  final String authorization;
+}
+
 class StoredSendingSession {
   const StoredSendingSession({
     this.bookId,
@@ -156,6 +168,9 @@ class LocalAppStore {
       'session_interval_milliseconds';
   static const _legacySessionIntervalSecondsKey = 'session_interval_seconds';
   static const _sessionNotificationBaseIdKey = 'session_notification_base_id';
+  static const _networkApiUrlKey = 'network_api_url';
+  static const _networkApiTitleKey = 'network_api_title';
+  static const _networkApiAuthorizationKey = 'network_api_authorization';
 
   Future<StoredNovelDocument> loadDocument() async {
     final preferences = await SharedPreferences.getInstance();
@@ -279,6 +294,29 @@ class LocalAppStore {
       maxCharacters: maxCharacters,
       modeIndex: modeIndex,
       intervalMilliseconds: intervalMilliseconds,
+    );
+  }
+
+  Future<StoredNetworkImportSettings> loadNetworkImportSettings() async {
+    final preferences = await SharedPreferences.getInstance();
+    return StoredNetworkImportSettings(
+      url: preferences.getString(_networkApiUrlKey) ?? '',
+      title: preferences.getString(_networkApiTitleKey) ?? '',
+      authorization: preferences.getString(_networkApiAuthorizationKey) ?? '',
+    );
+  }
+
+  Future<void> saveNetworkImportSettings({
+    required String url,
+    required String title,
+    required String authorization,
+  }) async {
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.setString(_networkApiUrlKey, url.trim());
+    await preferences.setString(_networkApiTitleKey, title.trim());
+    await preferences.setString(
+      _networkApiAuthorizationKey,
+      authorization.trim(),
     );
   }
 

@@ -109,7 +109,11 @@ void main() {
       const text = '这是用于验证下载完整性与流式进度回调的公共领域测试正文，长度超过最小正文限制。';
       server.listen((request) {
         final bytes = utf8.encode(text);
-        request.response.headers.contentType = ContentType('text', 'plain', charset: 'utf-8');
+        request.response.headers.contentType = ContentType(
+          'text',
+          'plain',
+          charset: 'utf-8',
+        );
         request.response.contentLength = bytes.length;
         request.response.add(bytes);
         request.response.close();
@@ -163,6 +167,20 @@ void main() {
       expect(document.customChunks, const ['测试', '正文']);
       expect(session?.nextIndex, 1);
       expect(session?.canResume, isTrue);
+    });
+
+    test('API 导入详情可以持久化恢复', () async {
+      await LocalAppStore.instance.saveNetworkImportSettings(
+        url: ' https://example.com/book.json ',
+        title: ' 网络测试图书 ',
+        authorization: ' Bearer demo-token ',
+      );
+
+      final settings = await LocalAppStore.instance.loadNetworkImportSettings();
+
+      expect(settings.url, 'https://example.com/book.json');
+      expect(settings.title, '网络测试图书');
+      expect(settings.authorization, 'Bearer demo-token');
     });
 
     test('多书库与当前选择可以持久化恢复', () async {
