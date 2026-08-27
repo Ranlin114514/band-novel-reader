@@ -49,6 +49,32 @@ Future<void> main() async {
 
 enum AppThemePreference { system, light, dark }
 
+enum AppColorPalette { teal, blue, indigo, violet, rose, coral, amber, lime }
+
+extension AppColorPaletteLabel on AppColorPalette {
+  String get title => switch (this) {
+    AppColorPalette.teal => '青绿',
+    AppColorPalette.blue => '湛蓝',
+    AppColorPalette.indigo => '靛蓝',
+    AppColorPalette.violet => '紫罗兰',
+    AppColorPalette.rose => '玫粉',
+    AppColorPalette.coral => '珊瑚',
+    AppColorPalette.amber => '琥珀',
+    AppColorPalette.lime => '青柠',
+  };
+
+  Color get seedColor => switch (this) {
+    AppColorPalette.teal => const Color(0xFF0B6B69),
+    AppColorPalette.blue => const Color(0xFF2465A8),
+    AppColorPalette.indigo => const Color(0xFF4F5DAA),
+    AppColorPalette.violet => const Color(0xFF7652A8),
+    AppColorPalette.rose => const Color(0xFFB24D7E),
+    AppColorPalette.coral => const Color(0xFFC25F3D),
+    AppColorPalette.amber => const Color(0xFF9B6500),
+    AppColorPalette.lime => const Color(0xFF647A00),
+  };
+}
+
 extension AppThemePreferenceLabel on AppThemePreference {
   String get title => switch (this) {
     AppThemePreference.system => '跟随系统',
@@ -69,9 +95,11 @@ class AppThemeController extends ChangeNotifier {
   static final instance = AppThemeController._();
   AppThemePreference _preference = AppThemePreference.system;
   bool _dynamicColorEnabled = false;
+  AppColorPalette _palette = AppColorPalette.teal;
 
   AppThemePreference get preference => _preference;
   bool get dynamicColorEnabled => _dynamicColorEnabled;
+  AppColorPalette get palette => _palette;
   ThemeMode get themeMode => switch (_preference) {
     AppThemePreference.system => ThemeMode.system,
     AppThemePreference.light => ThemeMode.light,
@@ -82,10 +110,13 @@ class AppThemeController extends ChangeNotifier {
     final values = await Future.wait<Object>([
       LocalAppStore.instance.loadThemePreference(),
       LocalAppStore.instance.isDynamicColorEnabled(),
+      LocalAppStore.instance.loadThemePalette(),
     ]);
     final index = values[0] as int;
     _preference = AppThemePreference.values[index.clamp(0, 2)];
     _dynamicColorEnabled = values[1] as bool;
+    final paletteIndex = values[2] as int;
+    _palette = AppColorPalette.values[paletteIndex.clamp(0, 7)];
   }
 
   Future<void> setPreference(AppThemePreference preference) async {
@@ -104,6 +135,15 @@ class AppThemeController extends ChangeNotifier {
     _dynamicColorEnabled = enabled;
     notifyListeners();
     await LocalAppStore.instance.saveDynamicColorEnabled(enabled);
+  }
+
+  Future<void> setPalette(AppColorPalette palette) async {
+    if (_palette == palette) {
+      return;
+    }
+    _palette = palette;
+    notifyListeners();
+    await LocalAppStore.instance.saveThemePalette(palette.index);
   }
 }
 
@@ -216,12 +256,17 @@ class NovelNotifierApp extends StatelessWidget {
     final scheme =
         colorScheme ??
         ColorScheme.fromSeed(
-          seedColor: const Color(0xFF0B6B69),
+          seedColor: themeController.palette.seedColor,
           brightness: brightness,
         );
     return ThemeData(
       colorScheme: scheme,
       useMaterial3: true,
+      pageTransitionsTheme: const PageTransitionsTheme(
+        builders: {
+          TargetPlatform.android: FadeForwardsPageTransitionsBuilder(),
+        },
+      ),
       scaffoldBackgroundColor: scheme.surface,
       appBarTheme: AppBarTheme(
         backgroundColor: scheme.surface,
@@ -3204,6 +3249,99 @@ class _LaboratoryPageState extends State<LaboratoryPage> {
   }
 }
 
+class _ThemePaletteTile extends StatelessWidget {
+  const _ThemePaletteTile({
+    required this.palette,
+    required this.selected,
+    required this.onSelected,
+  });
+
+  final AppColorPalette palette;
+  final bool selected;
+  final VoidCallback onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = ColorScheme.fromSeed(
+      seedColor: palette.seedColor,
+      brightness: Theme.of(context).brightness,
+    );
+    final theme = Theme.of(context);
+    return Semantics(
+      button: true,
+      selected: selected,
+      label: '${palette.title}调色板${selected ? '，已选择' : ''}',
+      child: Tooltip(
+        message: '${palette.title}调色板',
+        child: Material(
+          color: selected
+              ? theme.colorScheme.secondaryContainer
+              : scheme.surfaceContainerHigh,
+          borderRadius: BorderRadius.circular(16),
+          child: InkWell(
+            onTap: onSelected,
+            borderRadius: BorderRadius.circular(16),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  AnimatedContainer(
+                    duration: const Duration(milliseconds: 240),
+                    curve: Curves.easeOutCubic,
+                    width: 42,
+                    height: 42,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: scheme.primaryContainer,
+                      border: Border.all(
+                        color: selected
+                            ? theme.colorScheme.primary
+                            : scheme.primary,
+                        width: selected ? 3 : 1,
+                      ),
+                    ),
+                    child: Stack(
+                      alignment: Alignment.center,
+                      children: [
+                        Align(
+                          alignment: Alignment.bottomCenter,
+                          child: Container(
+                            height: 19,
+                            decoration: BoxDecoration(
+                              color: scheme.primary,
+                              borderRadius: const BorderRadius.vertical(
+                                bottom: Radius.circular(21),
+                              ),
+                            ),
+                          ),
+                        ),
+                        if (selected)
+                          Icon(
+                            Icons.check,
+                            color: theme.colorScheme.onSecondaryContainer,
+                            size: 21,
+                          ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 5),
+                  Text(
+                    palette.title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.labelSmall,
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class NovelEditorPage extends StatefulWidget {
   const NovelEditorPage({
     required this.initialText,
@@ -3360,6 +3498,13 @@ class _UnifiedSettingsPageState extends State<UnifiedSettingsPage> {
   late SendingMode _mode;
   late final TextEditingController _intervalController;
   late final TextEditingController _maxCharactersController;
+  final ScrollController _scrollController = ScrollController();
+  final GlobalKey _startupKey = GlobalKey();
+  final GlobalKey _appearanceKey = GlobalKey();
+  final GlobalKey _readingKey = GlobalKey();
+  final GlobalKey _sourcesKey = GlobalKey();
+  final GlobalKey _maintenanceKey = GlobalKey();
+  final GlobalKey _aboutKey = GlobalKey();
   String? _cacheMessage;
   String? _autoSaveMessage;
   bool _isClearingCache = false;
@@ -3401,6 +3546,7 @@ class _UnifiedSettingsPageState extends State<UnifiedSettingsPage> {
 
   @override
   void dispose() {
+    _scrollController.dispose();
     _intervalController.dispose();
     _maxCharactersController.dispose();
     super.dispose();
@@ -3634,6 +3780,19 @@ class _UnifiedSettingsPageState extends State<UnifiedSettingsPage> {
     unawaited(_persistSettings());
   }
 
+  void _scrollToSection(GlobalKey key) {
+    final targetContext = key.currentContext;
+    if (targetContext == null) {
+      return;
+    }
+    Scrollable.ensureVisible(
+      targetContext,
+      duration: const Duration(milliseconds: 320),
+      curve: Curves.easeOutCubic,
+      alignment: 0.06,
+    );
+  }
+
   Future<void> _close() async {
     await _persistSettings();
     if (mounted) {
@@ -3653,7 +3812,7 @@ class _UnifiedSettingsPageState extends State<UnifiedSettingsPage> {
       },
       child: Scaffold(
         appBar: AppBar(
-          title: const Text('统一设置管理'),
+          title: const Text('设置'),
           leading: IconButton(
             tooltip: '返回',
             onPressed: _close,
@@ -3662,9 +3821,72 @@ class _UnifiedSettingsPageState extends State<UnifiedSettingsPage> {
         ),
         body: SafeArea(
           child: ListView(
+            controller: _scrollController,
             padding: const EdgeInsets.all(16),
             children: [
-              Text('启动体验', style: Theme.of(context).textTheme.titleMedium),
+              Text('设置导航', style: Theme.of(context).textTheme.titleMedium),
+              const SizedBox(height: 8),
+              Card(
+                child: Column(
+                  children: [
+                    ListTile(
+                      leading: const Icon(Icons.apps_outlined),
+                      title: const Text('应用与后台'),
+                      subtitle: const Text('启动页、通知与后台发送保护'),
+                      trailing: const Icon(Icons.chevron_right_outlined),
+                      onTap: () => _scrollToSection(_startupKey),
+                    ),
+                    const Divider(height: 1),
+                    ListTile(
+                      leading: const Icon(Icons.palette_outlined),
+                      title: const Text('主题与色彩'),
+                      subtitle: const Text('深浅主题、莫奈和调色板'),
+                      trailing: const Icon(Icons.chevron_right_outlined),
+                      onTap: () => _scrollToSection(_appearanceKey),
+                    ),
+                    const Divider(height: 1),
+                    ListTile(
+                      leading: const Icon(Icons.auto_stories_outlined),
+                      title: const Text('阅读与发送'),
+                      subtitle: const Text('分段规则、手环预设与发送频率'),
+                      trailing: const Icon(Icons.chevron_right_outlined),
+                      onTap: () => _scrollToSection(_readingKey),
+                    ),
+                    const Divider(height: 1),
+                    ListTile(
+                      leading: const Icon(Icons.cloud_outlined),
+                      title: const Text('导入与智能'),
+                      subtitle: const Text('图书 API、AI 设置和模型'),
+                      trailing: const Icon(Icons.chevron_right_outlined),
+                      onTap: () => _scrollToSection(_sourcesKey),
+                    ),
+                    const Divider(height: 1),
+                    ListTile(
+                      leading: const Icon(Icons.storage_outlined),
+                      title: const Text('存储与实验室'),
+                      subtitle: const Text('缓存清理与实验功能'),
+                      trailing: const Icon(Icons.chevron_right_outlined),
+                      onTap: () => _scrollToSection(_maintenanceKey),
+                    ),
+                    const Divider(height: 1),
+                    ListTile(
+                      leading: const Icon(Icons.info_outline),
+                      title: const Text('更新与关于'),
+                      subtitle: const Text('更新策略、联系信息与项目支持'),
+                      trailing: const Icon(Icons.chevron_right_outlined),
+                      onTap: () => _scrollToSection(_aboutKey),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 28),
+              Container(
+                key: _startupKey,
+                child: Text(
+                  '应用与后台',
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+              ),
               const SizedBox(height: 8),
               AnimatedContainer(
                 duration: const Duration(milliseconds: 260),
@@ -3791,7 +4013,13 @@ class _UnifiedSettingsPageState extends State<UnifiedSettingsPage> {
                 ),
               ),
               const SizedBox(height: 24),
-              Text('主题外观', style: Theme.of(context).textTheme.titleMedium),
+              Container(
+                key: _appearanceKey,
+                child: Text(
+                  '主题与色彩',
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+              ),
               const SizedBox(height: 8),
               AnimatedContainer(
                 duration: const Duration(milliseconds: 300),
@@ -3849,8 +4077,60 @@ class _UnifiedSettingsPageState extends State<UnifiedSettingsPage> {
                   ),
                 ),
               ),
+              const SizedBox(height: 12),
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        '调色板',
+                        style: Theme.of(context).textTheme.titleSmall,
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        AppThemeController.instance.dynamicColorEnabled
+                            ? '当前启用系统动态取色；关闭莫奈后将使用下方选择的调色板。'
+                            : '选择配色后会立即应用并自动保存。',
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                      const SizedBox(height: 14),
+                      GridView.count(
+                        crossAxisCount: 4,
+                        shrinkWrap: true,
+                        physics: const NeverScrollableScrollPhysics(),
+                        mainAxisSpacing: 10,
+                        crossAxisSpacing: 10,
+                        childAspectRatio: 0.9,
+                        children: AppColorPalette.values
+                            .map(
+                              (palette) => _ThemePaletteTile(
+                                palette: palette,
+                                selected:
+                                    AppThemeController.instance.palette ==
+                                    palette,
+                                onSelected: () => unawaited(
+                                  AppThemeController.instance.setPalette(
+                                    palette,
+                                  ),
+                                ),
+                              ),
+                            )
+                            .toList(growable: false),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
               const SizedBox(height: 24),
-              Text('分段规则', style: Theme.of(context).textTheme.titleMedium),
+              Container(
+                key: _readingKey,
+                child: Text(
+                  '阅读与发送',
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+              ),
               if (_autoSaveMessage != null) ...[
                 const SizedBox(height: 4),
                 Text(
@@ -4054,7 +4334,15 @@ class _UnifiedSettingsPageState extends State<UnifiedSettingsPage> {
                 ),
               ],
               const SizedBox(height: 24),
-              Text('网络导入设置', style: Theme.of(context).textTheme.titleMedium),
+              Container(
+                key: _sourcesKey,
+                child: Text(
+                  '导入与智能',
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text('网络导入设置', style: Theme.of(context).textTheme.titleSmall),
               const SizedBox(height: 8),
               Card(
                 child: ListTile(
@@ -4093,7 +4381,15 @@ class _UnifiedSettingsPageState extends State<UnifiedSettingsPage> {
                 ),
               ),
               const SizedBox(height: 24),
-              Text('实验室', style: Theme.of(context).textTheme.titleMedium),
+              Container(
+                key: _maintenanceKey,
+                child: Text(
+                  '存储与实验室',
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text('实验室', style: Theme.of(context).textTheme.titleSmall),
               const SizedBox(height: 8),
               Card(
                 color: Theme.of(context).colorScheme.tertiaryContainer,
@@ -4124,7 +4420,15 @@ class _UnifiedSettingsPageState extends State<UnifiedSettingsPage> {
                 ),
               ),
               const SizedBox(height: 24),
-              Text('关于', style: Theme.of(context).textTheme.titleMedium),
+              Container(
+                key: _aboutKey,
+                child: Text(
+                  '更新与关于',
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text('关于', style: Theme.of(context).textTheme.titleSmall),
               const SizedBox(height: 8),
               Card(
                 child: Padding(

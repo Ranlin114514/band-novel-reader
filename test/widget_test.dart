@@ -451,6 +451,14 @@ void main() {
       expect(settings.authorization, 'Bearer demo-token');
     });
 
+    test('主题调色板选择可以自动持久化恢复', () async {
+      await LocalAppStore.instance.saveThemePalette(6);
+
+      final paletteIndex = await LocalAppStore.instance.loadThemePalette();
+
+      expect(paletteIndex, 6);
+    });
+
     test('启动推荐和 AI 设置可以持久化恢复', () async {
       await LocalAppStore.instance.saveStartupContentRecommendation(9);
       await LocalAppStore.instance.saveAiSettings(

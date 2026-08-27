@@ -207,6 +207,7 @@ class LocalAppStore {
   static const _wearablePresetMaxCharactersKey =
       'wearable_preset_max_characters';
   static const _themePreferenceKey = 'app_theme_preference';
+  static const _themePaletteKey = 'app_theme_palette';
   static const _startupScreenEnabledKey = 'startup_screen_enabled';
   static const _dynamicColorEnabledKey = 'dynamic_color_enabled';
   static const _modeIndexKey = 'sending_mode_index';
@@ -582,6 +583,19 @@ class LocalAppStore {
     await preferences.setInt(
       _themePreferenceKey,
       preferenceIndex.clamp(0, 2).toInt(),
+    );
+  }
+
+  Future<int> loadThemePalette() async {
+    final preferences = await SharedPreferences.getInstance();
+    return (preferences.getInt(_themePaletteKey) ?? 0).clamp(0, 7).toInt();
+  }
+
+  Future<void> saveThemePalette(int paletteIndex) async {
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.setInt(
+      _themePaletteKey,
+      paletteIndex.clamp(0, 7).toInt(),
     );
   }
 
