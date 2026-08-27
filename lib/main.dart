@@ -13,6 +13,7 @@ import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:http/http.dart' as http;
 import 'package:url_launcher/url_launcher.dart';
 
+import 'app_release.dart';
 import 'app_update_download_page.dart';
 import 'ai_summary_service.dart';
 import 'app_update_service.dart';
@@ -2050,6 +2051,10 @@ class _OnboardingPageState extends State<OnboardingPage> {
   String? _wearableManagerMessage;
   Timer? _donationTimer;
   int _donationSeconds = 5;
+  final PageController _onboardingPaymentController = PageController();
+  int _onboardingPaymentIndex = 0;
+  StoredAiSettings? _onboardingAiSettings;
+  bool _isLoadingOnboardingAiSettings = true;
 
   static const _wearableManagerOptions = <WearableManagerOption>[
     WearableManagerOption(
@@ -2106,11 +2111,13 @@ class _OnboardingPageState extends State<OnboardingPage> {
   void initState() {
     super.initState();
     unawaited(_readNotificationStatus());
+    unawaited(_loadOnboardingAiSettings());
   }
 
   @override
   void dispose() {
     _donationTimer?.cancel();
+    _onboardingPaymentController.dispose();
     super.dispose();
   }
 
@@ -2118,7 +2125,7 @@ class _OnboardingPageState extends State<OnboardingPage> {
     _donationTimer?.cancel();
     setState(() => _donationSeconds = 5);
     _donationTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      if (!mounted || _step != 4) {
+      if (!mounted || _step != 5) {
         timer.cancel();
         return;
       }
@@ -2129,6 +2136,24 @@ class _OnboardingPageState extends State<OnboardingPage> {
         setState(() => _donationSeconds--);
       }
     });
+  }
+
+  Future<void> _loadOnboardingAiSettings() async {
+    final settings = await LocalAppStore.instance.loadAiSettings();
+    if (mounted) {
+      setState(() {
+        _onboardingAiSettings = settings;
+        _isLoadingOnboardingAiSettings = false;
+      });
+    }
+  }
+
+  Future<void> _openOnboardingAiSettings() async {
+    await Navigator.of(context)
+        .push<void>(MaterialPageRoute(builder: (_) => const AiSettingsPage()));
+    if (mounted) {
+      await _loadOnboardingAiSettings();
+    }
   }
 
   Future<void> _readNotificationStatus() async {
@@ -2248,10 +2273,10 @@ class _OnboardingPageState extends State<OnboardingPage> {
     if (_step == 2 && _selectedWearableManager == null) {
       return;
     }
-    if (_step < 5) {
+    if (_step < 6) {
       final nextStep = _step + 1;
       setState(() => _step = nextStep);
-      if (nextStep == 4) {
+      if (nextStep == 5) {
         _startDonationCountdown();
       }
       return;
@@ -2297,14 +2322,19 @@ class _OnboardingPageState extends State<OnboardingPage> {
         body: '选择你的手环品牌后，应用会自动应用保守的单段字数预设，并打开相应的管理软件。请在其中开启“手环通知小说”的应用通知同步或镜像。',
       ),
       (
+        icon: Icons.auto_awesome_outlined,
+        title: '配置 AI 总结（可选）',
+        body: 'AI 总结需要你提供自己的 API、API Key 和模型。请在下一步打开 AI 设置，读取模型列表并测试服务连通性；未配置时仍可正常阅读和发送小说。',
+      ),
+      (
         icon: Icons.volunteer_activism_outlined,
         title: '支持项目继续前行',
-        body: '捐献我们，让我们走的更远。下一页将展示收款二维码，感谢每一份支持。',
+        body: '捐献我们，让我们走的更远。下一页将展示可滑动切换的支付宝和微信支付二维码，感谢每一份支持。',
       ),
       (
         icon: Icons.qr_code_scanner_outlined,
         title: '扫码支持',
-        body: '请使用支付宝扫描下方二维码。二维码展示期间将等待 5 秒后才可继续。',
+        body: '请左右滑动切换支付宝和微信支付二维码。二维码展示期间将等待 5 秒后才可继续。',
       ),
       (
         icon: Icons.save_outlined,
@@ -2312,7 +2342,7 @@ class _OnboardingPageState extends State<OnboardingPage> {
         body: '小说、分段规则、发送模式和未完成的发送位置均保存在本机。发送中止或重启应用后，可从上一次进度继续。',
       ),
     ];
-    if (_step == 4) {
+    if (_step == 5) {
       final ready = _donationSeconds == 0;
       return PopScope(
         canPop: false,
@@ -2323,21 +2353,44 @@ class _OnboardingPageState extends State<OnboardingPage> {
               child: Column(
                 children: [
                   Expanded(
-                    child: ColoredBox(
-                      color: Colors.white,
-                      child: SizedBox.expand(
-                        child: Image.asset(
-                          'assets/images/donation_alipay.webp',
-                          fit: BoxFit.contain,
-                          filterQuality: FilterQuality.high,
+                    child: PageView(
+                      controller: _onboardingPaymentController,
+                      onPageChanged: (index) =>
+                          setState(() => _onboardingPaymentIndex = index),
+                      children: const [
+                        ColoredBox(
+                          color: Colors.white,
+                          child: Image(
+                            image: AssetImage(
+                              'assets/images/donation_alipay.webp',
+                            ),
+                            fit: BoxFit.contain,
+                            filterQuality: FilterQuality.high,
+                          ),
                         ),
-                      ),
+                        ColoredBox(
+                          color: Colors.white,
+                          child: Image(
+                            image: AssetImage(
+                              'assets/images/donation_wechat.jpeg',
+                            ),
+                            fit: BoxFit.contain,
+                            filterQuality: FilterQuality.high,
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                   const SizedBox(height: 12),
                   Text(
-                    ready ? '感谢支持，你现在可以继续。' : '请稍候 $_donationSeconds 秒后继续',
+                    '${_onboardingPaymentIndex == 0 ? '支付宝' : '微信支付'} · 左右滑动图片切换支付方式',
                     style: Theme.of(context).textTheme.labelLarge,
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    ready ? '感谢支持，你现在可以继续。' : '请稍候 $_donationSeconds 秒后继续',
+                    style: Theme.of(context).textTheme.labelMedium,
                   ),
                   const SizedBox(height: 12),
                   SizedBox(
@@ -2454,6 +2507,53 @@ class _OnboardingPageState extends State<OnboardingPage> {
                       label: const Text('打开系统通知设置'),
                     ),
                   ],
+                ],
+                if (_step == 3) ...[
+                  const SizedBox(height: 18),
+                  Card(
+                    child: Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            _isLoadingOnboardingAiSettings
+                                ? '正在读取 AI 设置…'
+                                : _onboardingAiSettings!.apiKey
+                                          .trim()
+                                          .isNotEmpty &&
+                                      _onboardingAiSettings!.model
+                                          .trim()
+                                          .isNotEmpty
+                                ? '已配置模型：${_onboardingAiSettings!.model}'
+                                : '尚未配置 AI 服务',
+                            style: Theme.of(context).textTheme.titleSmall,
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            '打开后可填写 API Base URL、API Key 和聊天路径，从 /models 中选择模型，并执行连通性测试。配置仅存储在本机。',
+                            style: Theme.of(context).textTheme.bodySmall,
+                          ),
+                          const SizedBox(height: 12),
+                          FilledButton.icon(
+                            onPressed: _isLoadingOnboardingAiSettings
+                                ? null
+                                : _openOnboardingAiSettings,
+                            icon: _isLoadingOnboardingAiSettings
+                                ? const SizedBox(
+                                    width: 18,
+                                    height: 18,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                    ),
+                                  )
+                                : const Icon(Icons.settings_suggest_outlined),
+                            label: const Text('配置 AI、选择模型并测试'),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
                 ],
                 if (_step == 2) ...[
                   const SizedBox(height: 18),
@@ -2578,14 +2678,14 @@ class _OnboardingPageState extends State<OnboardingPage> {
                           (_step == 1 && _notificationGranted != true) ||
                               (_step == 2 &&
                                   _selectedWearableManager == null) ||
-                              (_step == 4 && _donationSeconds > 0)
+                              (_step == 5 && _donationSeconds > 0)
                           ? null
                           : _next,
                       icon: Icon(
                         isLast ? Icons.check_outlined : Icons.arrow_forward,
                       ),
                       label: Text(
-                        _step == 4 && _donationSeconds > 0
+                        _step == 5 && _donationSeconds > 0
                             ? '下一步（$_donationSeconds 秒）'
                             : (isLast ? '完成' : '下一步'),
                       ),
@@ -2601,11 +2701,31 @@ class _OnboardingPageState extends State<OnboardingPage> {
   }
 }
 
-class DonationImagePage extends StatelessWidget {
+class DonationImagePage extends StatefulWidget {
   const DonationImagePage({super.key});
 
   @override
+  State<DonationImagePage> createState() => _DonationImagePageState();
+}
+
+class _DonationImagePageState extends State<DonationImagePage> {
+  final PageController _pageController = PageController();
+  var _pageIndex = 0;
+
+  static const _paymentPages = <({String title, String assetPath})>[
+    (title: '支付宝', assetPath: 'assets/images/donation_alipay.webp'),
+    (title: '微信支付', assetPath: 'assets/images/donation_wechat.jpeg'),
+  ];
+
+  @override
+  void dispose() {
+    _pageController.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     return Scaffold(
       appBar: AppBar(title: const Text('捐献支持')),
       body: SafeArea(
@@ -2614,35 +2734,282 @@ class DonationImagePage extends StatelessWidget {
           child: Column(
             children: [
               Text(
-                '捐献我们，让我们走的更远',
-                style: Theme.of(context).textTheme.titleLarge,
+                '捐献我们，让我们走得更远',
+                style: theme.textTheme.titleLarge,
                 textAlign: TextAlign.center,
               ),
               const SizedBox(height: 8),
               Text(
-                '感谢你的支持。请使用支付宝扫一扫图片中的二维码。',
-                style: Theme.of(context).textTheme.bodySmall,
+                '当前：${_paymentPages[_pageIndex].title}。左右滑动图片可切换支付宝和微信支付。',
+                style: theme.textTheme.bodySmall,
                 textAlign: TextAlign.center,
               ),
-              const SizedBox(height: 20),
+              const SizedBox(height: 16),
               Expanded(
-                child: InteractiveViewer(
-                  minScale: 0.8,
-                  maxScale: 3,
-                  child: Center(
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(20),
-                      child: Image.asset(
-                        'assets/images/donation_alipay.webp',
-                        fit: BoxFit.contain,
+                child: PageView.builder(
+                  controller: _pageController,
+                  itemCount: _paymentPages.length,
+                  onPageChanged: (index) => setState(() => _pageIndex = index),
+                  itemBuilder: (context, index) {
+                    final payment = _paymentPages[index];
+                    return Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 4),
+                      child: InteractiveViewer(
+                        minScale: 0.8,
+                        maxScale: 3,
+                        child: Center(
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(20),
+                            child: Image.asset(
+                              payment.assetPath,
+                              fit: BoxFit.contain,
+                              filterQuality: FilterQuality.high,
+                            ),
+                          ),
+                        ),
                       ),
+                    );
+                  },
+                ),
+              ),
+              const SizedBox(height: 12),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: List<Widget>.generate(
+                  _paymentPages.length,
+                  (index) => AnimatedContainer(
+                    duration: const Duration(milliseconds: 180),
+                    margin: const EdgeInsets.symmetric(horizontal: 4),
+                    width: index == _pageIndex ? 20 : 8,
+                    height: 8,
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(4),
+                      color: index == _pageIndex
+                          ? theme.colorScheme.primary
+                          : theme.colorScheme.outlineVariant,
                     ),
                   ),
                 ),
               ),
+              const SizedBox(height: 8),
+              Text('滑动切换支付方式', style: theme.textTheme.labelMedium),
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+class LaboratoryPage extends StatefulWidget {
+  const LaboratoryPage({super.key});
+
+  @override
+  State<LaboratoryPage> createState() => _LaboratoryPageState();
+}
+
+class _LaboratoryPageState extends State<LaboratoryPage> {
+  final TextEditingController _sampleController = TextEditingController(
+    text: '第一段有空行。\n\n\n第二段包含表情 😀，并保留情节转折。',
+  );
+  StoredNovelDocument? _document;
+  StoredUpdateDeferral? _deferral;
+  AppUpdateSource _source = AppUpdateSource.github;
+  bool _automaticCheckEnabled = true;
+  int _launchCount = 0;
+  List<String> _preview = const [];
+  bool _isLoading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_load());
+  }
+
+  @override
+  void dispose() {
+    _sampleController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _load() async {
+    setState(() => _isLoading = true);
+    final values = await Future.wait<Object?>([
+      LocalAppStore.instance.loadDocument(),
+      LocalAppStore.instance.loadUpdateDeferral(),
+      LocalAppStore.instance.loadUpdateSourceIndex(),
+      LocalAppStore.instance.isAutomaticUpdateCheckEnabled(),
+      LocalAppStore.instance.loadAppLaunchCount(),
+    ]);
+    if (!mounted) {
+      return;
+    }
+    final document = values[0] as StoredNovelDocument;
+    final sourceIndex = values[2] as int;
+    setState(() {
+      _document = document;
+      _deferral = values[1] as StoredUpdateDeferral?;
+      _source = AppUpdateSource
+          .values[sourceIndex.clamp(0, AppUpdateSource.values.length - 1)];
+      _automaticCheckEnabled = values[3] as bool;
+      _launchCount = values[4] as int;
+      _isLoading = false;
+      _preview = NovelTextSplitter.split(
+        _sampleController.text,
+        maxCharacters: document.maxCharacters,
+        compactContent: document.compactSegmentContent,
+        removeEmoji: document.removeEmojiFromSegments,
+        richContent: document.richSegmentContent,
+      );
+    });
+  }
+
+  void _runSegmentExperiment() {
+    final document = _document;
+    if (document == null) {
+      return;
+    }
+    setState(() {
+      _preview = NovelTextSplitter.split(
+        _sampleController.text,
+        maxCharacters: document.maxCharacters,
+        compactContent: document.compactSegmentContent,
+        removeEmoji: document.removeEmojiFromSegments,
+        richContent: document.richSegmentContent,
+      );
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final document = _document;
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('实验室'),
+        actions: [
+          IconButton(
+            tooltip: '刷新诊断数据',
+            onPressed: _isLoading ? null : _load,
+            icon: const Icon(Icons.refresh_outlined),
+          ),
+        ],
+      ),
+      body: SafeArea(
+        child: _isLoading
+            ? const Center(child: CircularProgressIndicator())
+            : ListView(
+                padding: const EdgeInsets.all(16),
+                children: [
+                  Card(
+                    color: theme.colorScheme.tertiaryContainer,
+                    child: const Padding(
+                      padding: EdgeInsets.all(16),
+                      child: Text(
+                        '实验室中的结果仅用于验证功能，不会自动修改书库、分段内容或更新策略。实验功能可能在后续版本调整或移除。',
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+                  Text('更新提醒策略诊断', style: theme.textTheme.titleMedium),
+                  const SizedBox(height: 8),
+                  Card(
+                    child: Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            '自动检查：${_automaticCheckEnabled ? '已开启' : '已关闭'}',
+                          ),
+                          const SizedBox(height: 6),
+                          Text('更新来源：${_source.title}'),
+                          const SizedBox(height: 6),
+                          Text('已记录应用启动次数：$_launchCount'),
+                          const SizedBox(height: 6),
+                          Text(
+                            _deferral == null
+                                ? '当前没有延后提醒记录。'
+                                : '延后版本：${_deferral!.tag} · 已延后 ${_deferral!.deferCount} 次 · 下次自动提示不早于第 ${_deferral!.nextPromptLaunch} 次启动。',
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+                  Text('实验性分段试验场', style: theme.textTheme.titleMedium),
+                  const SizedBox(height: 8),
+                  Card(
+                    child: Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          Text(
+                            '使用当前正式设置：${document?.maxCharacters ?? 0} 字/段 · ${document?.compactSegmentContent == true ? '内容紧凑' : '保留空行'} · ${document?.removeEmojiFromSegments == true ? '删除 Emoji' : '保留 Emoji'} · ${document?.richSegmentContent == true ? '内容丰富' : '常规分段'}',
+                            style: theme.textTheme.bodySmall,
+                          ),
+                          const SizedBox(height: 12),
+                          TextField(
+                            controller: _sampleController,
+                            minLines: 3,
+                            maxLines: 6,
+                            decoration: const InputDecoration(
+                              labelText: '实验文本',
+                              helperText: '仅用于预览，不会保存或发送。',
+                              alignLabelWithHint: true,
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                          FilledButton.icon(
+                            onPressed: _runSegmentExperiment,
+                            icon: const Icon(Icons.play_arrow_outlined),
+                            label: const Text('运行分段试验'),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Card(
+                    color: theme.colorScheme.secondaryContainer,
+                    child: Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            '试验结果：${_preview.length} 段',
+                            style: theme.textTheme.titleSmall,
+                          ),
+                          const SizedBox(height: 8),
+                          if (_preview.isEmpty)
+                            const Text('输入文本后运行试验，即可在这里查看分段结果。')
+                          else
+                            for (
+                              var index = 0;
+                              index < _preview.length && index < 3;
+                              index++
+                            )
+                              Padding(
+                                padding: const EdgeInsets.only(bottom: 8),
+                                child: Text(
+                                  '${index + 1}. ${_preview[index]}',
+                                  maxLines: 3,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                          if (_preview.length > 3)
+                            Text(
+                              '其余 ${_preview.length - 3} 段已省略；本实验不会写入书库。',
+                              style: theme.textTheme.bodySmall,
+                            ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              ),
       ),
     );
   }
@@ -2935,6 +3302,36 @@ class _UnifiedSettingsPageState extends State<UnifiedSettingsPage> {
   void _setUpdateSource(AppUpdateSource source) {
     setState(() => _updateSource = source);
     unawaited(LocalAppStore.instance.saveUpdateSourceIndex(source.index));
+  }
+
+  Future<void> _openLaboratory() async {
+    final accepted = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => AlertDialog(
+        icon: const Icon(Icons.science_outlined),
+        title: const Text('实验室高风险提示'),
+        content: const Text(
+          '实验室包含仍在验证的功能与诊断工具，界面、行为和可用性可能在后续版本改变。请不要将实验输出视为已保存的正式内容，并在继续前确认你接受上述风险。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton.icon(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            icon: const Icon(Icons.science_outlined),
+            label: const Text('我已了解，进入实验室'),
+          ),
+        ],
+      ),
+    );
+    if (accepted == true && mounted) {
+      await Navigator.of(
+        context,
+      ).push<void>(MaterialPageRoute(builder: (_) => const LaboratoryPage()));
+    }
   }
 
   void _setStartupScreenEnabled(bool enabled) {
@@ -3507,6 +3904,19 @@ class _UnifiedSettingsPageState extends State<UnifiedSettingsPage> {
                 ),
               ),
               const SizedBox(height: 24),
+              Text('实验室', style: Theme.of(context).textTheme.titleMedium),
+              const SizedBox(height: 8),
+              Card(
+                color: Theme.of(context).colorScheme.tertiaryContainer,
+                child: ListTile(
+                  leading: const Icon(Icons.science_outlined),
+                  title: const Text('实验室功能'),
+                  subtitle: const Text('查看实验性分段试验场与更新提醒策略诊断。功能可能在后续版本变化。'),
+                  trailing: const Icon(Icons.chevron_right_outlined),
+                  onTap: _openLaboratory,
+                ),
+              ),
+              const SizedBox(height: 24),
               Text('存储与缓存', style: Theme.of(context).textTheme.titleMedium),
               const SizedBox(height: 8),
               Card(
@@ -3547,7 +3957,7 @@ class _UnifiedSettingsPageState extends State<UnifiedSettingsPage> {
                       const Text('应用版本'),
                       const SizedBox(height: 2),
                       Text(
-                        '2.2Alpha4（2.2.0-alpha.4+12）',
+                        AppRelease.displayVersion,
                         style: Theme.of(context).textTheme.bodyMedium,
                       ),
                       const SizedBox(height: 18),

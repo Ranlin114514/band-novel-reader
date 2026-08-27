@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 
+import 'app_release.dart';
 import 'local_app_store.dart';
 
 class AppUpdateInfo {
@@ -91,7 +92,7 @@ extension AppUpdateSourceDetails on AppUpdateSource {
 class AppUpdateService {
   AppUpdateService._();
 
-  static const currentReleaseTag = '2.2Alpha4';
+  static const currentReleaseTag = AppRelease.tag;
   static const _repository = 'Ranlin114514/band-novel-reader';
   static const _timeout = Duration(seconds: 20);
   static const _maximumApkBytes = 250 * 1024 * 1024;

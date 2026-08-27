@@ -4,6 +4,7 @@ import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:novelnotifier/ai_summary_service.dart';
+import 'package:novelnotifier/app_release.dart';
 import 'package:novelnotifier/app_update_service.dart';
 import 'package:novelnotifier/book_metadata.dart';
 import 'package:novelnotifier/local_app_store.dart';
@@ -12,6 +13,16 @@ import 'package:novelnotifier/network_book_importer.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
+  group('AppRelease', () {
+    test('关于页与更新检查共用的发行版本元数据符合 Alpha5 构建', () {
+      expect(AppRelease.tag, '2.2Alpha5');
+      expect(AppRelease.versionName, '2.2.0-alpha.5');
+      expect(AppRelease.versionCode, 13);
+      expect(AppRelease.displayVersion, '2.2Alpha5（2.2.0-alpha.5+13）');
+      expect(AppUpdateService.currentReleaseTag, AppRelease.tag);
+    });
+  });
+
   group('NovelTextSplitter', () {
     test('每个分片均不超过指定字符数，且拼接后保持正文完整', () {
       const source = '第一章：夜雨敲窗。林舟没有开灯，静静听着远处的钟声。\n\n第二章：风停了，信封却自己滑进门缝。';
