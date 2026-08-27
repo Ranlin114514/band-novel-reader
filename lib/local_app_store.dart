@@ -225,6 +225,7 @@ class LocalAppStore {
   static const _aiUseReasoningKey = 'ai_use_reasoning';
   static const _aiCustomPromptKey = 'ai_custom_prompt';
   static const _deferredUpdateTagKey = 'deferred_update_tag';
+  static const _updateSourceKey = 'update_source';
 
   Future<StoredNovelDocument> loadDocument() async {
     final preferences = await SharedPreferences.getInstance();
@@ -418,6 +419,16 @@ class LocalAppStore {
       preferences.setBool(_aiUseReasoningKey, useReasoning),
       preferences.setString(_aiCustomPromptKey, customPrompt.trim()),
     ]);
+  }
+
+  Future<int> loadUpdateSourceIndex() async {
+    final preferences = await SharedPreferences.getInstance();
+    return (preferences.getInt(_updateSourceKey) ?? 0).clamp(0, 1).toInt();
+  }
+
+  Future<void> saveUpdateSourceIndex(int index) async {
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.setInt(_updateSourceKey, index.clamp(0, 1).toInt());
   }
 
   Future<String?> loadDeferredUpdateTag() async {

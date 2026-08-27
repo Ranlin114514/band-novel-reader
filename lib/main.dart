@@ -1459,7 +1459,10 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
       setState(() => _isCheckingForUpdate = true);
     }
     try {
-      final update = await AppUpdateService.checkForUpdate();
+      final sourceIndex = await LocalAppStore.instance.loadUpdateSourceIndex();
+      final source = AppUpdateSource
+          .values[sourceIndex.clamp(0, AppUpdateSource.values.length - 1)];
+      final update = await AppUpdateService.checkForUpdate(source: source);
       if (!mounted) return;
       if (update == null) {
         return;
@@ -2761,6 +2764,8 @@ class _UnifiedSettingsPageState extends State<UnifiedSettingsPage> {
   late bool _removeEmojiFromSegments;
   late bool _richSegmentContent;
   late StartupContentRecommendation _startupRecommendation;
+  AppUpdateSource _updateSource = AppUpdateSource.github;
+  bool _isLoadingUpdateSource = true;
 
   @override
   void initState() {
@@ -2781,6 +2786,7 @@ class _UnifiedSettingsPageState extends State<UnifiedSettingsPage> {
     unawaited(_loadWearablePreset());
     unawaited(_loadStartupScreenSetting());
     unawaited(_loadStartupContentRecommendation());
+    unawaited(_loadUpdateSource());
   }
 
   @override
@@ -2848,6 +2854,22 @@ class _UnifiedSettingsPageState extends State<UnifiedSettingsPage> {
             )];
       });
     }
+  }
+
+  Future<void> _loadUpdateSource() async {
+    final index = await LocalAppStore.instance.loadUpdateSourceIndex();
+    if (mounted) {
+      setState(() {
+        _updateSource = AppUpdateSource
+            .values[index.clamp(0, AppUpdateSource.values.length - 1)];
+        _isLoadingUpdateSource = false;
+      });
+    }
+  }
+
+  void _setUpdateSource(AppUpdateSource source) {
+    setState(() => _updateSource = source);
+    unawaited(LocalAppStore.instance.saveUpdateSourceIndex(source.index));
   }
 
   void _setStartupScreenEnabled(bool enabled) {
@@ -3561,6 +3583,69 @@ class _UnifiedSettingsPageState extends State<UnifiedSettingsPage> {
                       ),
                     ],
                   ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              Card(
+                child: ListTile(
+                  leading: const Icon(Icons.system_update_alt_outlined),
+                  title: const Text('更新来源'),
+                  subtitle: Text(
+                    _isLoadingUpdateSource
+                        ? '正在读取更新来源设置…'
+                        : '${_updateSource.title} · ${_updateSource.subtitle}',
+                  ),
+                  trailing: _isLoadingUpdateSource
+                      ? const SizedBox(
+                          width: 22,
+                          height: 22,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.chevron_right_outlined),
+                  onTap: _isLoadingUpdateSource
+                      ? null
+                      : () async {
+                          final selected =
+                              await showModalBottomSheet<AppUpdateSource>(
+                                context: context,
+                                showDragHandle: true,
+                                builder: (sheetContext) => SafeArea(
+                                  child: ListView(
+                                    shrinkWrap: true,
+                                    children: [
+                                      const ListTile(
+                                        title: Text('选择更新来源'),
+                                        subtitle: Text(
+                                          '更新检查和 APK 下载会统一使用所选来源。镜像服务由第三方提供，请在网络受限时按需使用。',
+                                        ),
+                                      ),
+                                      for (final source
+                                          in AppUpdateSource.values)
+                                        ListTile(
+                                          leading: Icon(
+                                            source == AppUpdateSource.github
+                                                ? Icons.verified_outlined
+                                                : Icons.swap_horiz_outlined,
+                                          ),
+                                          title: Text(source.title),
+                                          subtitle: Text(source.subtitle),
+                                          trailing: source == _updateSource
+                                              ? const Icon(
+                                                  Icons.check_circle_outlined,
+                                                )
+                                              : null,
+                                          onTap: () =>
+                                              Navigator.of(sheetContext)
+                                                  .pop(source),
+                                        ),
+                                    ],
+                                  ),
+                                ),
+                              );
+                          if (selected != null) {
+                            _setUpdateSource(selected);
+                          }
+                        },
                 ),
               ),
             ],

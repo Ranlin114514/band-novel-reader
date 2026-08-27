@@ -206,6 +206,43 @@ void main() {
   });
 
   group('AppUpdateService', () {
+    test('镜像更新源会代理 APK 下载地址', () async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      server.listen((request) async {
+        request.response.headers.contentType = ContentType.json;
+        request.response.write(
+          jsonEncode([
+            {
+              'tag_name': '2.2Alpha5',
+              'name': 'Band Novel Reader 2.2Alpha5',
+              'draft': false,
+              'assets': [
+                {
+                  'name': 'band-novel-reader.apk',
+                  'browser_download_url': 'https://github.com/example/app.apk',
+                },
+              ],
+            },
+          ]),
+        );
+        await request.response.close();
+      });
+      addTearDown(server.close);
+
+      final update = await AppUpdateService.checkForUpdate(
+        currentTag: '2.2Alpha4',
+        source: AppUpdateSource.githubMirror,
+        endpoint: Uri.parse(
+          'http://${server.address.address}:${server.port}/releases',
+        ),
+      );
+
+      expect(
+        update?.apkUrl,
+        'https://gh-proxy.com/https://github.com/example/app.apk',
+      );
+    });
+
     test('当前版本已是最新时不返回更新提示', () async {
       final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
       server.listen((request) async {
@@ -423,6 +460,14 @@ void main() {
       expect(ai.model, 'story-model');
       expect(ai.useReasoning, isTrue);
       expect(ai.customPrompt, '保留关键线索。');
+    });
+
+    test('更新来源选择可以持久化恢复', () async {
+      await LocalAppStore.instance.saveUpdateSourceIndex(1);
+
+      final source = await LocalAppStore.instance.loadUpdateSourceIndex();
+
+      expect(source, 1);
     });
 
     test('多书库与当前选择可以持久化恢复', () async {

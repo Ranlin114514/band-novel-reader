@@ -56,6 +56,36 @@ class AppUpdateCancelledException implements Exception {
   String toString() => '更新下载已取消。';
 }
 
+enum AppUpdateSource { github, githubMirror }
+
+extension AppUpdateSourceDetails on AppUpdateSource {
+  String get title => switch (this) {
+    AppUpdateSource.github => 'GitHub 官方',
+    AppUpdateSource.githubMirror => 'GitHub 镜像站',
+  };
+
+  String get subtitle => switch (this) {
+    AppUpdateSource.github => '直接从 GitHub Releases 检查并下载。',
+    AppUpdateSource.githubMirror => '通过 gh-proxy.com 代理 GitHub 发行版和 APK 下载。',
+  };
+
+  Uri releaseEndpoint(String repository) {
+    final official =
+        'https://api.github.com/repos/$repository/releases?per_page=40';
+    return switch (this) {
+      AppUpdateSource.github => Uri.parse(official),
+      AppUpdateSource.githubMirror => Uri.parse(
+        'https://gh-proxy.com/$official',
+      ),
+    };
+  }
+
+  String downloadUrl(String officialUrl) => switch (this) {
+    AppUpdateSource.github => officialUrl,
+    AppUpdateSource.githubMirror => 'https://gh-proxy.com/$officialUrl',
+  };
+}
+
 class AppUpdateService {
   AppUpdateService._();
 
@@ -66,16 +96,14 @@ class AppUpdateService {
 
   static Future<AppUpdateInfo?> checkForUpdate({
     String currentTag = currentReleaseTag,
+    AppUpdateSource source = AppUpdateSource.github,
     Uri? endpoint,
   }) async {
     final client = http.Client();
     try {
       final response = await client
           .get(
-            endpoint ??
-                Uri.parse(
-                  'https://api.github.com/repos/$_repository/releases?per_page=40',
-                ),
+            endpoint ?? source.releaseEndpoint(_repository),
             headers: const {
               'Accept': 'application/vnd.github+json',
               'User-Agent': 'BandNovelReader/2.2 (Android; update-check)',
@@ -120,7 +148,7 @@ class AppUpdateService {
               ? tag
               : (item['name'] as String).trim(),
           releaseUrl: item['html_url'] as String? ?? '',
-          apkUrl: apkUrl,
+          apkUrl: source.downloadUrl(apkUrl),
           notes: (item['body'] as String? ?? '').trim(),
         );
         if (latest == null ||
