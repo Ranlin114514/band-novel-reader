@@ -4242,19 +4242,19 @@ class _UnifiedSettingsPageState extends State<UnifiedSettingsPage> {
                 child: Column(
                   children: [
                     ListTile(
-                      leading: const Icon(Icons.apps_outlined),
-                      title: const Text('后台'),
-                      subtitle: const Text('启动页、通知与后台发送保护'),
-                      trailing: const Icon(Icons.chevron_right_outlined),
-                      onTap: () => _scrollToSection(_startupKey),
-                    ),
-                    const Divider(height: 1),
-                    ListTile(
                       leading: const Icon(Icons.palette_outlined),
                       title: const Text('主题'),
                       subtitle: const Text('深浅主题、莫奈和调色板'),
                       trailing: const Icon(Icons.chevron_right_outlined),
                       onTap: () => _scrollToSection(_appearanceKey),
+                    ),
+                    const Divider(height: 1),
+                    ListTile(
+                      leading: const Icon(Icons.apps_outlined),
+                      title: const Text('后台'),
+                      subtitle: const Text('启动页、通知与后台发送保护'),
+                      trailing: const Icon(Icons.chevron_right_outlined),
+                      onTap: () => _scrollToSection(_startupKey),
                     ),
                     const Divider(height: 1),
                     ListTile(
@@ -4308,6 +4308,117 @@ class _UnifiedSettingsPageState extends State<UnifiedSettingsPage> {
                 ),
               ),
               const SizedBox(height: 28),
+              Container(
+                key: _appearanceKey,
+                child: Text(
+                  '主题',
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+              ),
+              const SizedBox(height: 8),
+              AnimatedContainer(
+                duration: const Duration(milliseconds: 300),
+                curve: Curves.easeOutCubic,
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        '选择应用主题，设置会自动保存并在下次启动时恢复。',
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                      const SizedBox(height: 10),
+                      SegmentedButton<AppThemePreference>(
+                        segments: AppThemePreference.values
+                            .map(
+                              (preference) => ButtonSegment(
+                                value: preference,
+                                icon: Icon(preference.icon),
+                                label: Text(preference.title),
+                              ),
+                            )
+                            .toList(growable: false),
+                        selected: {AppThemeController.instance.preference},
+                        onSelectionChanged: (selected) {
+                          unawaited(
+                            AppThemeController.instance.setPreference(
+                              selected.first,
+                            ),
+                          );
+                        },
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              Card(
+                child: SwitchListTile.adaptive(
+                  secondary: const Icon(Icons.palette_outlined),
+                  title: const Text('使用系统动态配色（莫奈）'),
+                  subtitle: Text(
+                    AppThemeController.instance.dynamicColorEnabled
+                        ? '已启用：Android 12 及以上使用壁纸与系统配色；不支持时自动使用应用默认配色。'
+                        : '关闭：始终使用应用默认的 Material 3 配色。',
+                  ),
+                  value: AppThemeController.instance.dynamicColorEnabled,
+                  onChanged: (enabled) => unawaited(
+                    AppThemeController.instance.setDynamicColorEnabled(enabled),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        '调色板',
+                        style: Theme.of(context).textTheme.titleSmall,
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        AppThemeController.instance.dynamicColorEnabled
+                            ? '当前启用系统动态取色；关闭莫奈后将使用下方选择的调色板。'
+                            : '选择配色后会立即应用并自动保存。',
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                      const SizedBox(height: 14),
+                      GridView.count(
+                        crossAxisCount: 4,
+                        shrinkWrap: true,
+                        physics: const NeverScrollableScrollPhysics(),
+                        mainAxisSpacing: 10,
+                        crossAxisSpacing: 10,
+                        childAspectRatio: 0.9,
+                        children: AppColorPalette.values
+                            .map(
+                              (palette) => _ThemePaletteTile(
+                                palette: palette,
+                                selected:
+                                    AppThemeController.instance.palette ==
+                                    palette,
+                                onSelected: () => unawaited(
+                                  AppThemeController.instance.setPalette(
+                                    palette,
+                                  ),
+                                ),
+                              ),
+                            )
+                            .toList(growable: false),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 24),
               Container(
                 key: _startupKey,
                 child: Text(
@@ -4438,117 +4549,6 @@ class _UnifiedSettingsPageState extends State<UnifiedSettingsPage> {
                       }
                     }
                   },
-                ),
-              ),
-              const SizedBox(height: 24),
-              Container(
-                key: _appearanceKey,
-                child: Text(
-                  '主题',
-                  style: Theme.of(context).textTheme.titleMedium,
-                ),
-              ),
-              const SizedBox(height: 8),
-              AnimatedContainer(
-                duration: const Duration(milliseconds: 300),
-                curve: Curves.easeOutCubic,
-                decoration: BoxDecoration(
-                  color: Theme.of(context).colorScheme.surfaceContainerHighest,
-                  borderRadius: BorderRadius.circular(16),
-                ),
-                child: Padding(
-                  padding: const EdgeInsets.all(12),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        '选择应用主题，设置会自动保存并在下次启动时恢复。',
-                        style: Theme.of(context).textTheme.bodySmall,
-                      ),
-                      const SizedBox(height: 10),
-                      SegmentedButton<AppThemePreference>(
-                        segments: AppThemePreference.values
-                            .map(
-                              (preference) => ButtonSegment(
-                                value: preference,
-                                icon: Icon(preference.icon),
-                                label: Text(preference.title),
-                              ),
-                            )
-                            .toList(growable: false),
-                        selected: {AppThemeController.instance.preference},
-                        onSelectionChanged: (selected) {
-                          unawaited(
-                            AppThemeController.instance.setPreference(
-                              selected.first,
-                            ),
-                          );
-                        },
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-              const SizedBox(height: 12),
-              Card(
-                child: SwitchListTile.adaptive(
-                  secondary: const Icon(Icons.palette_outlined),
-                  title: const Text('使用系统动态配色（莫奈）'),
-                  subtitle: Text(
-                    AppThemeController.instance.dynamicColorEnabled
-                        ? '已启用：Android 12 及以上使用壁纸与系统配色；不支持时自动使用应用默认配色。'
-                        : '关闭：始终使用应用默认的 Material 3 配色。',
-                  ),
-                  value: AppThemeController.instance.dynamicColorEnabled,
-                  onChanged: (enabled) => unawaited(
-                    AppThemeController.instance.setDynamicColorEnabled(enabled),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 12),
-              Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        '调色板',
-                        style: Theme.of(context).textTheme.titleSmall,
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        AppThemeController.instance.dynamicColorEnabled
-                            ? '当前启用系统动态取色；关闭莫奈后将使用下方选择的调色板。'
-                            : '选择配色后会立即应用并自动保存。',
-                        style: Theme.of(context).textTheme.bodySmall,
-                      ),
-                      const SizedBox(height: 14),
-                      GridView.count(
-                        crossAxisCount: 4,
-                        shrinkWrap: true,
-                        physics: const NeverScrollableScrollPhysics(),
-                        mainAxisSpacing: 10,
-                        crossAxisSpacing: 10,
-                        childAspectRatio: 0.9,
-                        children: AppColorPalette.values
-                            .map(
-                              (palette) => _ThemePaletteTile(
-                                palette: palette,
-                                selected:
-                                    AppThemeController.instance.palette ==
-                                    palette,
-                                onSelected: () => unawaited(
-                                  AppThemeController.instance.setPalette(
-                                    palette,
-                                  ),
-                                ),
-                              ),
-                            )
-                            .toList(growable: false),
-                      ),
-                    ],
-                  ),
                 ),
               ),
               const SizedBox(height: 24),
