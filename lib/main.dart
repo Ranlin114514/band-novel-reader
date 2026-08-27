@@ -2643,6 +2643,12 @@ class _OnboardingPageState extends State<OnboardingPage> {
                                 : const Icon(Icons.settings_suggest_outlined),
                             label: const Text('配置 AI、选择模型并测试'),
                           ),
+                          const SizedBox(height: 4),
+                          TextButton.icon(
+                            onPressed: _next,
+                            icon: const Icon(Icons.skip_next_outlined),
+                            label: const Text('跳过 AI 设置，稍后再配置'),
+                          ),
                         ],
                       ),
                     ),
