@@ -14,6 +14,7 @@ import 'package:http/http.dart' as http;
 import 'package:url_launcher/url_launcher.dart';
 
 import 'app_update_download_page.dart';
+import 'ai_summary_service.dart';
 import 'app_update_service.dart';
 import 'book_metadata.dart';
 import 'cache_cleaner.dart';
@@ -131,18 +132,48 @@ class SendingConfig {
   }
 }
 
+enum StartupContentRecommendation {
+  random(null, '随机推荐', '由一言在可用内容中随机推荐', Icons.shuffle_outlined),
+  animation('a', '动画', '动画台词与相关句子', Icons.movie_outlined),
+  comics('b', '漫画', '漫画台词与相关句子', Icons.auto_stories_outlined),
+  games('c', '游戏', '游戏台词与相关句子', Icons.sports_esports_outlined),
+  literature('d', '文学', '小说、散文与文学摘录', Icons.menu_book_outlined),
+  original('e', '原创', '原创投稿内容', Icons.edit_note_outlined),
+  network('f', '网络', '来自网络的句子', Icons.language_outlined),
+  other('g', '其他', '其他分类内容', Icons.category_outlined),
+  film('h', '影视', '影视台词与相关句子', Icons.live_tv_outlined),
+  poetry('i', '诗词', '古今诗词内容', Icons.format_quote_outlined),
+  music('j', '网易云', '音乐类内容；服务端可能无可用结果', Icons.music_note_outlined),
+  philosophy('k', '哲学', '哲学与思辨内容', Icons.psychology_outlined),
+  humor('l', '抖机灵', '轻松幽默的短句', Icons.sentiment_satisfied_alt_outlined);
+
+  const StartupContentRecommendation(
+    this.apiCategory,
+    this.title,
+    this.description,
+    this.icon,
+  );
+
+  final String? apiCategory;
+  final String title;
+  final String description;
+  final IconData icon;
+}
+
 class AppSettingsResult {
   const AppSettingsResult({
     required this.config,
     required this.maxCharacters,
     required this.compactSegmentContent,
     required this.removeEmojiFromSegments,
+    required this.richSegmentContent,
   });
 
   final SendingConfig config;
   final int maxCharacters;
   final bool compactSegmentContent;
   final bool removeEmojiFromSegments;
+  final bool richSegmentContent;
 }
 
 class EditorResult {
@@ -334,6 +365,8 @@ class _StartupQuotePageState extends State<StartupQuotePage> {
   String _quote = _fallbackQuote;
   String _source = '本地文案';
   bool _visible = false;
+  StartupContentRecommendation _recommendation =
+      StartupContentRecommendation.random;
 
   @override
   void initState() {
@@ -343,9 +376,20 @@ class _StartupQuotePageState extends State<StartupQuotePage> {
 
   Future<void> _loadQuoteThenEnter() async {
     try {
+      final index = await LocalAppStore.instance
+          .loadStartupContentRecommendation();
+      _recommendation =
+          StartupContentRecommendation.values[index.clamp(
+            0,
+            StartupContentRecommendation.values.length - 1,
+          )];
+      final query = <String, String>{'encode': 'json'};
+      if (_recommendation.apiCategory case final String category) {
+        query['c'] = category;
+      }
       final response = await http
           .get(
-            Uri.parse('https://v1.hitokoto.cn/?c=i&encode=json'),
+            Uri.https('v1.hitokoto.cn', '/', query),
             headers: const {'Accept': 'application/json'},
           )
           .timeout(const Duration(seconds: 2));
@@ -363,7 +407,9 @@ class _StartupQuotePageState extends State<StartupQuotePage> {
             ];
             setState(() {
               _quote = text;
-              _source = pieces.isEmpty ? '一言' : pieces.join(' · ');
+              _source = pieces.isEmpty
+                  ? '一言 · ${_recommendation.title}'
+                  : '${pieces.join(' · ')} · ${_recommendation.title}';
             });
           }
         }
@@ -452,6 +498,7 @@ class _NovelHomePageState extends State<NovelHomePage> {
   int _maxCharacters = 120;
   bool _compactSegmentContent = false;
   bool _removeEmojiFromSegments = false;
+  bool _richSegmentContent = false;
   SendingConfig _sendingConfig = const SendingConfig.defaults();
   List<String>? _customChunks;
   StoredSendingSession? _resumeSession;
@@ -465,6 +512,7 @@ class _NovelHomePageState extends State<NovelHomePage> {
         maxCharacters: _maxCharacters,
         compactContent: _compactSegmentContent,
         removeEmoji: _removeEmojiFromSegments,
+        richContent: _richSegmentContent,
       );
 
   @override
@@ -504,6 +552,7 @@ class _NovelHomePageState extends State<NovelHomePage> {
       _maxCharacters = document.maxCharacters;
       _compactSegmentContent = document.compactSegmentContent;
       _removeEmojiFromSegments = document.removeEmojiFromSegments;
+      _richSegmentContent = document.richSegmentContent;
       _sendingConfig = SendingConfig(
         mode: _modeFromIndex(document.modeIndex),
         intervalMilliseconds: document.intervalMilliseconds,
@@ -527,6 +576,7 @@ class _NovelHomePageState extends State<NovelHomePage> {
       customChunks: _customChunks,
       compactSegmentContent: _compactSegmentContent,
       removeEmojiFromSegments: _removeEmojiFromSegments,
+      richSegmentContent: _richSegmentContent,
     );
   }
 
@@ -558,6 +608,7 @@ class _NovelHomePageState extends State<NovelHomePage> {
           initialMaxCharacters: _maxCharacters,
           initialCompactSegmentContent: _compactSegmentContent,
           initialRemoveEmojiFromSegments: _removeEmojiFromSegments,
+          initialRichSegmentContent: _richSegmentContent,
         ),
       ),
     );
@@ -569,6 +620,7 @@ class _NovelHomePageState extends State<NovelHomePage> {
       _maxCharacters = result.maxCharacters;
       _compactSegmentContent = result.compactSegmentContent;
       _removeEmojiFromSegments = result.removeEmojiFromSegments;
+      _richSegmentContent = result.richSegmentContent;
       _customChunks = null;
     });
     await _persistDocument();
@@ -877,6 +929,7 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
   int _maxCharacters = 120;
   bool _compactSegmentContent = false;
   bool _removeEmojiFromSegments = false;
+  bool _richSegmentContent = false;
   SendingConfig _sendingConfig = const SendingConfig.defaults();
   StoredSendingSession? _session;
   Map<String, StoredSendingSession> _sessionsByBook = const {};
@@ -911,6 +964,7 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
           maxCharacters: _maxCharacters,
           compactContent: _compactSegmentContent,
           removeEmoji: _removeEmojiFromSegments,
+          richContent: _richSegmentContent,
         );
   }
 
@@ -994,6 +1048,7 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
       _maxCharacters = document.maxCharacters;
       _compactSegmentContent = document.compactSegmentContent;
       _removeEmojiFromSegments = document.removeEmojiFromSegments;
+      _richSegmentContent = document.richSegmentContent;
       _sendingConfig = SendingConfig(
         mode: _modeFromIndex(document.modeIndex),
         intervalMilliseconds: document.intervalMilliseconds,
@@ -1068,6 +1123,7 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
       intervalMilliseconds: _sendingConfig.intervalMilliseconds,
       compactSegmentContent: _compactSegmentContent,
       removeEmojiFromSegments: _removeEmojiFromSegments,
+      richSegmentContent: _richSegmentContent,
     );
   }
 
@@ -1315,7 +1371,7 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
     }
     setState(() => _isCatalogImporting = true);
     try {
-      await Navigator.of(context).push<bool>(
+      final imported = await Navigator.of(context).push<bool>(
         MaterialPageRoute(
           fullscreenDialog: true,
           builder: (_) => CatalogBookDownloadPage.forApi(
@@ -1324,6 +1380,9 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
           ),
         ),
       );
+      if (imported == true && mounted) {
+        await _openNetworkBookManager(focusBookId: _selectedBookId);
+      }
     } finally {
       if (mounted) {
         setState(() => _isCatalogImporting = false);
@@ -1344,7 +1403,7 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
     }
     setState(() => _isCatalogImporting = true);
     try {
-      await Navigator.of(context).push<bool>(
+      final imported = await Navigator.of(context).push<bool>(
         MaterialPageRoute(
           fullscreenDialog: true,
           builder: (_) => CatalogBookDownloadPage(
@@ -1353,6 +1412,9 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
           ),
         ),
       );
+      if (imported == true && mounted) {
+        await _openNetworkBookManager(focusBookId: _selectedBookId);
+      }
     } finally {
       if (mounted) {
         setState(() => _isCatalogImporting = false);
@@ -1373,6 +1435,7 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
       text: downloaded.text,
       fileName: '${downloaded.title}.txt',
       customChunks: null,
+      source: BookStorageSource.network,
     );
     final byIdentity = <String, StoredLibraryBook>{
       for (final book in _books) '${book.fileName}:${book.text.hashCode}': book,
@@ -1382,6 +1445,54 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
       _books = byIdentity.values.toList(growable: false);
       _selectedBookId = imported.id;
       _session = _sessionsByBook[imported.id];
+    });
+    await _persistLibrary();
+  }
+
+  Future<void> _openNetworkBookManager({String? focusBookId}) async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(
+        builder: (_) => NetworkBookStoragePage(
+          books: _books
+              .where((book) => book.source == BookStorageSource.network)
+              .toList(growable: false),
+          selectedBookId: focusBookId ?? _selectedBookId,
+          onDelete: _deleteNetworkBook,
+        ),
+      ),
+    );
+  }
+
+  Future<void> _deleteNetworkBook(StoredLibraryBook book) async {
+    if (book.source != BookStorageSource.network) {
+      return;
+    }
+    if (book.id == _selectedBookId) {
+      await _pauseTaskBeforeBookSwitch();
+    }
+    await LocalAppStore.instance.removeSendingSessionForBook(book.id);
+    if (!mounted) {
+      return;
+    }
+    final remaining = _books
+        .where((item) => item.id != book.id)
+        .toList(growable: false);
+    final remainingSessions = Map<String, StoredSendingSession>.from(
+      _sessionsByBook,
+    )..remove(book.id);
+    final nextSelectedId = remaining.any((item) => item.id == _selectedBookId)
+        ? _selectedBookId
+        : (remaining.isEmpty ? null : remaining.first.id);
+    setState(() {
+      _books = remaining;
+      _selectedBookId = nextSelectedId;
+      _sessionsByBook = remainingSessions;
+      _session = _sessionForBook(
+        bookId: nextSelectedId,
+        sessionsByBook: remainingSessions,
+        legacySession: null,
+      );
+      _isBackgroundRunning = false;
     });
     await _persistLibrary();
   }
@@ -1482,6 +1593,7 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
           initialMaxCharacters: _maxCharacters,
           initialCompactSegmentContent: _compactSegmentContent,
           initialRemoveEmojiFromSegments: _removeEmojiFromSegments,
+          initialRichSegmentContent: _richSegmentContent,
         ),
       ),
     );
@@ -1493,6 +1605,7 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
       _maxCharacters = result.maxCharacters;
       _compactSegmentContent = result.compactSegmentContent;
       _removeEmojiFromSegments = result.removeEmojiFromSegments;
+      _richSegmentContent = result.richSegmentContent;
       _books = _books
           .map(
             (book) => StoredLibraryBook(
@@ -1500,6 +1613,7 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
               text: book.text,
               fileName: book.fileName,
               customChunks: null,
+              source: book.source,
             ),
           )
           .toList(growable: false);
@@ -1535,6 +1649,7 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
                     text: item.text,
                     fileName: item.fileName,
                     customChunks: adjusted,
+                    source: item.source,
                   )
                 : item,
           )
@@ -1703,6 +1818,7 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
               text: book.text,
               fileName: book.fileName,
               customChunks: null,
+              source: book.source,
             ),
           )
           .toList(growable: false);
@@ -1743,6 +1859,7 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
               text: book.text,
               fileName: book.fileName,
               customChunks: null,
+              source: book.source,
             ),
           )
           .toList(growable: false);
@@ -1928,6 +2045,14 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
                 : '切换手环品牌：$_wearableBrandName',
             onPressed: _openBrandPicker,
             icon: BrandLogoIcon(brandId: _wearableBrandId, size: 24),
+          ),
+          IconButton(
+            tooltip: '管理书源下载',
+            onPressed:
+                _books.any((book) => book.source == BookStorageSource.network)
+                ? _openNetworkBookManager
+                : null,
+            icon: const Icon(Icons.inventory_2_outlined),
           ),
           IconButton(
             tooltip: '选择图书',
@@ -2427,6 +2552,7 @@ class _OnboardingPageState extends State<OnboardingPage> {
       intervalMilliseconds: document.intervalMilliseconds,
       compactSegmentContent: document.compactSegmentContent,
       removeEmojiFromSegments: document.removeEmojiFromSegments,
+      richSegmentContent: document.richSegmentContent,
     );
     await LocalAppStore.instance.saveWearablePreset(
       enabled: true,
@@ -3027,6 +3153,7 @@ class UnifiedSettingsPage extends StatefulWidget {
     required this.initialMaxCharacters,
     required this.initialCompactSegmentContent,
     required this.initialRemoveEmojiFromSegments,
+    required this.initialRichSegmentContent,
     super.key,
   });
 
@@ -3034,6 +3161,7 @@ class UnifiedSettingsPage extends StatefulWidget {
   final int initialMaxCharacters;
   final bool initialCompactSegmentContent;
   final bool initialRemoveEmojiFromSegments;
+  final bool initialRichSegmentContent;
 
   @override
   State<UnifiedSettingsPage> createState() => _UnifiedSettingsPageState();
@@ -3054,6 +3182,8 @@ class _UnifiedSettingsPageState extends State<UnifiedSettingsPage> {
   bool _startupScreenEnabled = true;
   late bool _compactSegmentContent;
   late bool _removeEmojiFromSegments;
+  late bool _richSegmentContent;
+  late StartupContentRecommendation _startupRecommendation;
 
   @override
   void initState() {
@@ -3067,10 +3197,13 @@ class _UnifiedSettingsPageState extends State<UnifiedSettingsPage> {
     );
     _compactSegmentContent = widget.initialCompactSegmentContent;
     _removeEmojiFromSegments = widget.initialRemoveEmojiFromSegments;
+    _richSegmentContent = widget.initialRichSegmentContent;
+    _startupRecommendation = StartupContentRecommendation.random;
     _intervalController.addListener(_onSettingChanged);
     _maxCharactersController.addListener(_onSettingChanged);
     unawaited(_loadWearablePreset());
     unawaited(_loadStartupScreenSetting());
+    unawaited(_loadStartupContentRecommendation());
   }
 
   @override
@@ -3088,7 +3221,11 @@ class _UnifiedSettingsPageState extends State<UnifiedSettingsPage> {
 
   int get _manualMaxCharacters {
     final entered = int.tryParse(_maxCharactersController.text.trim()) ?? 120;
-    return entered.clamp(20, 1000).toInt();
+    return entered.clamp(60, 250).toInt();
+  }
+
+  void _setMaxCharactersFromSlider(double value) {
+    _maxCharactersController.text = value.round().toString();
   }
 
   int get _maxCharacters =>
@@ -3122,9 +3259,47 @@ class _UnifiedSettingsPageState extends State<UnifiedSettingsPage> {
     }
   }
 
+  Future<void> _loadStartupContentRecommendation() async {
+    final index = await LocalAppStore.instance
+        .loadStartupContentRecommendation();
+    if (mounted) {
+      setState(() {
+        _startupRecommendation =
+            StartupContentRecommendation.values[index.clamp(
+              0,
+              StartupContentRecommendation.values.length - 1,
+            )];
+      });
+    }
+  }
+
   void _setStartupScreenEnabled(bool enabled) {
     setState(() => _startupScreenEnabled = enabled);
     unawaited(LocalAppStore.instance.saveStartupScreenEnabled(enabled));
+  }
+
+  void _setStartupRecommendation(StartupContentRecommendation value) {
+    setState(() => _startupRecommendation = value);
+    unawaited(
+      LocalAppStore.instance.saveStartupContentRecommendation(value.index),
+    );
+  }
+
+  Future<void> _setRichSegmentContent(bool enabled) async {
+    if (!enabled) {
+      setState(() => _richSegmentContent = false);
+      await _persistSettings();
+      return;
+    }
+    final confirmed = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const RichSegmentRiskDialog(),
+    );
+    if (confirmed == true && mounted) {
+      setState(() => _richSegmentContent = true);
+      await _persistSettings();
+    }
   }
 
   void _setUseWearablePreset(bool enabled) {
@@ -3179,6 +3354,7 @@ class _UnifiedSettingsPageState extends State<UnifiedSettingsPage> {
     maxCharacters: _maxCharacters,
     compactSegmentContent: _compactSegmentContent,
     removeEmojiFromSegments: _removeEmojiFromSegments,
+    richSegmentContent: _richSegmentContent,
   );
 
   Future<void> _persistSettings() async {
@@ -3188,6 +3364,7 @@ class _UnifiedSettingsPageState extends State<UnifiedSettingsPage> {
       intervalMilliseconds: _intervalMilliseconds,
       compactSegmentContent: _compactSegmentContent,
       removeEmojiFromSegments: _removeEmojiFromSegments,
+      richSegmentContent: _richSegmentContent,
     );
     if (_presetLoaded) {
       await LocalAppStore.instance.saveWearablePreset(
@@ -3259,6 +3436,65 @@ class _UnifiedSettingsPageState extends State<UnifiedSettingsPage> {
                   value: _startupScreenEnabled,
                   onChanged: _setStartupScreenEnabled,
                 ),
+              ),
+              const SizedBox(height: 12),
+              AnimatedSize(
+                duration: const Duration(milliseconds: 240),
+                curve: Curves.easeOutCubic,
+                child: _startupScreenEnabled
+                    ? Card(
+                        child: ListTile(
+                          leading: Icon(_startupRecommendation.icon),
+                          title: const Text('启动页内容推荐'),
+                          subtitle: Text(
+                            '${_startupRecommendation.title} · ${_startupRecommendation.description}',
+                          ),
+                          trailing: const Icon(Icons.chevron_right_outlined),
+                          onTap: () async {
+                            final selected =
+                                await showModalBottomSheet<
+                                  StartupContentRecommendation
+                                >(
+                                  context: context,
+                                  showDragHandle: true,
+                                  builder: (sheetContext) => SafeArea(
+                                    child: ListView(
+                                      shrinkWrap: true,
+                                      children: [
+                                        const ListTile(
+                                          title: Text('选择启动页内容'),
+                                          subtitle: Text(
+                                            '随机推荐或选择一言 API 的单一内容分类。',
+                                          ),
+                                        ),
+                                        for (final item
+                                            in StartupContentRecommendation
+                                                .values)
+                                          ListTile(
+                                            leading: Icon(item.icon),
+                                            title: Text(item.title),
+                                            subtitle: Text(item.description),
+                                            trailing:
+                                                item == _startupRecommendation
+                                                ? const Icon(
+                                                    Icons.check_circle_outlined,
+                                                  )
+                                                : null,
+                                            onTap: () =>
+                                                Navigator.of(sheetContext)
+                                                    .pop(item),
+                                          ),
+                                      ],
+                                    ),
+                                  ),
+                                );
+                            if (selected != null) {
+                              _setStartupRecommendation(selected);
+                            }
+                          },
+                        ),
+                      )
+                    : const SizedBox.shrink(),
               ),
               const SizedBox(height: 12),
               Card(
@@ -3426,17 +3662,52 @@ class _UnifiedSettingsPageState extends State<UnifiedSettingsPage> {
                       )
                     : Padding(
                         padding: const EdgeInsets.only(top: 12),
-                        child: TextField(
-                          controller: _maxCharactersController,
-                          keyboardType: TextInputType.number,
-                          inputFormatters: [
-                            FilteringTextInputFormatter.digitsOnly,
-                          ],
-                          decoration: InputDecoration(
-                            labelText: '统一每段最大字符数',
-                            helperText:
-                                '支持 20–1000；保存后统一按 $_maxCharacters 字/段重新切分，并覆盖局部批量调整。',
-                            prefixIcon: const Icon(Icons.format_size_outlined),
+                        child: Card(
+                          child: Padding(
+                            padding: const EdgeInsets.all(16),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.stretch,
+                              children: [
+                                Row(
+                                  children: [
+                                    const Icon(Icons.format_size_outlined),
+                                    const SizedBox(width: 10),
+                                    Expanded(
+                                      child: Text(
+                                        '统一每段最大字符数：$_maxCharacters',
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .titleSmall,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                Slider(
+                                  value: _manualMaxCharacters.toDouble(),
+                                  min: 60,
+                                  max: 250,
+                                  divisions: 190,
+                                  label: '$_manualMaxCharacters 字',
+                                  onChanged: _setMaxCharactersFromSlider,
+                                ),
+                                Text(
+                                  '滑动范围 60–250 字；也可在下方手动输入。修改后会统一重新切分，并覆盖局部批量调整。',
+                                  style: Theme.of(context).textTheme.bodySmall,
+                                ),
+                                const SizedBox(height: 12),
+                                TextField(
+                                  controller: _maxCharactersController,
+                                  keyboardType: TextInputType.number,
+                                  inputFormatters: [
+                                    FilteringTextInputFormatter.digitsOnly,
+                                  ],
+                                  decoration: const InputDecoration(
+                                    labelText: '手动输入每段最大字符数',
+                                    helperText: '支持 60–250 字。',
+                                  ),
+                                ),
+                              ],
+                            ),
                           ),
                         ),
                       ),
@@ -3465,6 +3736,22 @@ class _UnifiedSettingsPageState extends State<UnifiedSettingsPage> {
                     setState(() => _removeEmojiFromSegments = enabled);
                     unawaited(_persistSettings());
                   },
+                ),
+              ),
+              const SizedBox(height: 8),
+              Card(
+                color: _richSegmentContent
+                    ? Theme.of(context).colorScheme.tertiaryContainer
+                    : null,
+                child: SwitchListTile.adaptive(
+                  secondary: const Icon(Icons.warning_amber_outlined),
+                  title: const Text('内容丰富模式'),
+                  subtitle: const Text(
+                    '启用后为尽量填满每段字数会删除全部 Emoji 和部分弱标点，可能影响阅读节奏。',
+                  ),
+                  value: _richSegmentContent,
+                  onChanged: (enabled) =>
+                      unawaited(_setRichSegmentContent(enabled)),
                 ),
               ),
               const SizedBox(height: 24),
@@ -3540,6 +3827,22 @@ class _UnifiedSettingsPageState extends State<UnifiedSettingsPage> {
                 ),
               ),
               const SizedBox(height: 24),
+              Text('AI 总结', style: Theme.of(context).textTheme.titleMedium),
+              const SizedBox(height: 8),
+              Card(
+                child: ListTile(
+                  leading: const Icon(Icons.auto_awesome_outlined),
+                  title: const Text('AI 设置与模型'),
+                  subtitle: const Text(
+                    '配置 OpenAI 或兼容 API，测试连通性，读取可选模型，并设置深度思考和附加提示词。',
+                  ),
+                  trailing: const Icon(Icons.chevron_right_outlined),
+                  onTap: () => Navigator.of(context).push<void>(
+                    MaterialPageRoute(builder: (_) => const AiSettingsPage()),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 24),
               Text('存储与缓存', style: Theme.of(context).textTheme.titleMedium),
               const SizedBox(height: 8),
               Card(
@@ -3580,7 +3883,7 @@ class _UnifiedSettingsPageState extends State<UnifiedSettingsPage> {
                       const Text('应用版本'),
                       const SizedBox(height: 2),
                       Text(
-                        '2.2Alpha2（2.2.0-alpha.3+11）',
+                        '2.2Alpha4（2.2.0-alpha.4+12）',
                         style: Theme.of(context).textTheme.bodyMedium,
                       ),
                       const SizedBox(height: 18),
@@ -3691,6 +3994,71 @@ class _UnifiedSettingsPageState extends State<UnifiedSettingsPage> {
   }
 }
 
+class RichSegmentRiskDialog extends StatefulWidget {
+  const RichSegmentRiskDialog({super.key});
+
+  @override
+  State<RichSegmentRiskDialog> createState() => _RichSegmentRiskDialogState();
+}
+
+class _RichSegmentRiskDialogState extends State<RichSegmentRiskDialog> {
+  Timer? _timer;
+  int _seconds = 3;
+
+  @override
+  void initState() {
+    super.initState();
+    _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (!mounted) {
+        timer.cancel();
+        return;
+      }
+      if (_seconds <= 1) {
+        timer.cancel();
+        setState(() => _seconds = 0);
+      } else {
+        setState(() => _seconds--);
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      icon: const Icon(Icons.warning_amber_rounded),
+      title: const Text('高风险：内容丰富模式'),
+      content: const Text(
+        '此模式会为尽量填满单条通知的最大字数，自动删除全部 Emoji，并移除逗号、顿号、冒号、分号等弱标点。它不会替换正文或删除句号、问号和感叹号，但阅读节奏、语气与部分格式仍可能变差。\n\n请仅在确认手环容量非常有限且愿意承担阅读困难风险时开启。',
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(false),
+          child: const Text('取消'),
+        ),
+        FilledButton.icon(
+          onPressed: _seconds == 0
+              ? () => Navigator.of(context).pop(true)
+              : null,
+          icon: _seconds == 0
+              ? const Icon(Icons.warning_amber_rounded)
+              : const SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+          label: Text(_seconds == 0 ? '我已了解，仍要开启' : '请阅读（$_seconds 秒）'),
+        ),
+      ],
+    );
+  }
+}
+
 class SegmentPreviewPage extends StatefulWidget {
   const SegmentPreviewPage({
     required this.chunks,
@@ -3714,6 +4082,24 @@ class _SegmentPreviewPageState extends State<SegmentPreviewPage> {
   void initState() {
     super.initState();
     _chunks = List<String>.of(widget.chunks);
+  }
+
+  Future<void> _openAiSummary() async {
+    final summarized = await Navigator.of(context).push<List<String>>(
+      MaterialPageRoute(
+        builder: (_) => AiSegmentSummaryPage(
+          chunks: _chunks,
+          maxCharacters: widget.maxCharacters,
+        ),
+      ),
+    );
+    if (summarized == null || !mounted) {
+      return;
+    }
+    setState(() {
+      _chunks = summarized;
+      _wasAdjusted = true;
+    });
   }
 
   Future<void> _openBatchAdjuster() async {
@@ -3757,6 +4143,11 @@ class _SegmentPreviewPageState extends State<SegmentPreviewPage> {
           ),
           title: const Text('完整分段预览'),
           actions: [
+            IconButton(
+              tooltip: 'AI 总结分段',
+              onPressed: _openAiSummary,
+              icon: const Icon(Icons.auto_awesome_outlined),
+            ),
             IconButton(
               tooltip: '批量调整指定段落',
               onPressed: _openBatchAdjuster,
@@ -4849,6 +5240,847 @@ class BackgroundNovelTaskHandler extends TaskHandler {
   }
 }
 
+class AiSettingsPage extends StatefulWidget {
+  const AiSettingsPage({super.key});
+
+  @override
+  State<AiSettingsPage> createState() => _AiSettingsPageState();
+}
+
+class _AiSettingsPageState extends State<AiSettingsPage> {
+  final _nameController = TextEditingController();
+  final _keyController = TextEditingController();
+  final _baseUrlController = TextEditingController();
+  final _chatPathController = TextEditingController();
+  final _modelController = TextEditingController();
+  final _promptController = TextEditingController();
+  int _providerIndex = 0;
+  bool _useReasoning = false;
+  bool _hideKey = true;
+  bool _isLoading = true;
+  bool _isTesting = false;
+  String? _statusMessage;
+  List<AiModelInfo> _models = const [];
+
+  @override
+  void initState() {
+    super.initState();
+    for (final controller in [
+      _nameController,
+      _keyController,
+      _baseUrlController,
+      _chatPathController,
+      _modelController,
+      _promptController,
+    ]) {
+      controller.addListener(_autosave);
+    }
+    unawaited(_load());
+  }
+
+  @override
+  void dispose() {
+    for (final controller in [
+      _nameController,
+      _keyController,
+      _baseUrlController,
+      _chatPathController,
+      _modelController,
+      _promptController,
+    ]) {
+      controller
+        ..removeListener(_autosave)
+        ..dispose();
+    }
+    super.dispose();
+  }
+
+  StoredAiSettings get _settings => StoredAiSettings(
+    providerIndex: _providerIndex,
+    apiName: _nameController.text,
+    apiKey: _keyController.text,
+    baseUrl: _baseUrlController.text,
+    chatPath: _chatPathController.text,
+    model: _modelController.text,
+    useReasoning: _useReasoning,
+    customPrompt: _promptController.text,
+  );
+
+  Future<void> _load() async {
+    final stored = await LocalAppStore.instance.loadAiSettings();
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _providerIndex = stored.providerIndex;
+      _nameController.text = stored.apiName;
+      _keyController.text = stored.apiKey;
+      _baseUrlController.text = stored.baseUrl;
+      _chatPathController.text = stored.chatPath;
+      _modelController.text = stored.model;
+      _useReasoning = stored.useReasoning;
+      _promptController.text = stored.customPrompt;
+      _isLoading = false;
+    });
+  }
+
+  Future<void> _persist() => LocalAppStore.instance.saveAiSettings(
+    providerIndex: _providerIndex,
+    apiName: _nameController.text,
+    apiKey: _keyController.text,
+    baseUrl: _baseUrlController.text,
+    chatPath: _chatPathController.text,
+    model: _modelController.text,
+    useReasoning: _useReasoning,
+    customPrompt: _promptController.text,
+  );
+
+  void _autosave() {
+    if (!_isLoading) {
+      unawaited(_persist());
+    }
+  }
+
+  void _setProvider(int index) {
+    setState(() {
+      _providerIndex = index;
+      if (index == 0) {
+        _nameController.text = 'OpenAI';
+        _baseUrlController.text = 'https://api.openai.com/v1';
+        _chatPathController.text = '/chat/completions';
+      } else if (_nameController.text.trim().isEmpty ||
+          _nameController.text.trim() == 'OpenAI') {
+        _nameController.text = '兼容 API';
+      }
+    });
+    unawaited(_persist());
+  }
+
+  Future<void> _testConnection() async {
+    setState(() {
+      _isTesting = true;
+      _statusMessage = null;
+    });
+    try {
+      await _persist();
+      final service = AiSummaryService();
+      try {
+        final models = await service.testConnection(_settings);
+        if (mounted) {
+          setState(() {
+            _models = models;
+            _statusMessage = '连接正常，已读取 ${models.length} 个可用模型。';
+          });
+        }
+      } finally {
+        service.dispose();
+      }
+    } on FormatException catch (error) {
+      if (mounted) {
+        setState(() => _statusMessage = error.message.toString());
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(
+          () =>
+              _statusMessage = '连接测试失败，请检查网络、Base URL、API Key 与 /models 支持情况。',
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isTesting = false);
+      }
+    }
+  }
+
+  Future<void> _pickModel() async {
+    await _persist();
+    if (!mounted) {
+      return;
+    }
+    final selected = await Navigator.of(context).push<String>(
+      MaterialPageRoute(builder: (_) => AiModelPickerPage(settings: _settings)),
+    );
+    if (selected == null || !mounted) {
+      return;
+    }
+    _modelController.text = selected;
+    await _persist();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_isLoading) {
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    }
+    final theme = Theme.of(context);
+    return Scaffold(
+      appBar: AppBar(title: const Text('AI 设置与模型')),
+      body: SafeArea(
+        child: ListView(
+          padding: const EdgeInsets.all(16),
+          children: [
+            Card(
+              color: theme.colorScheme.primaryContainer,
+              child: const Padding(
+                padding: EdgeInsets.all(16),
+                child: Text(
+                  '配置将仅保存在本机。AI 总结会把你选择的分段发送至所配置的服务；请只使用你信任的 API，并确保具备对应服务的授权。',
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            SegmentedButton<int>(
+              segments: const [
+                ButtonSegment(
+                  value: 0,
+                  icon: Icon(Icons.auto_awesome_outlined),
+                  label: Text('OpenAI'),
+                ),
+                ButtonSegment(
+                  value: 1,
+                  icon: Icon(Icons.settings_ethernet_outlined),
+                  label: Text('兼容 API'),
+                ),
+              ],
+              selected: {_providerIndex},
+              onSelectionChanged: (selected) => _setProvider(selected.first),
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: _nameController,
+              textInputAction: TextInputAction.next,
+              decoration: const InputDecoration(
+                labelText: '名称',
+                prefixIcon: Icon(Icons.badge_outlined),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _keyController,
+              obscureText: _hideKey,
+              autocorrect: false,
+              enableSuggestions: false,
+              textInputAction: TextInputAction.next,
+              decoration: InputDecoration(
+                labelText: 'API Key',
+                prefixIcon: const Icon(Icons.key_outlined),
+                suffixIcon: IconButton(
+                  tooltip: _hideKey ? '显示 API Key' : '隐藏 API Key',
+                  onPressed: () => setState(() => _hideKey = !_hideKey),
+                  icon: Icon(
+                    _hideKey
+                        ? Icons.visibility_outlined
+                        : Icons.visibility_off_outlined,
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _baseUrlController,
+              keyboardType: TextInputType.url,
+              autocorrect: false,
+              enableSuggestions: false,
+              textInputAction: TextInputAction.next,
+              decoration: const InputDecoration(
+                labelText: 'API Base URL',
+                helperText: '例如 https://api.openai.com/v1',
+                prefixIcon: Icon(Icons.link_outlined),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _chatPathController,
+              autocorrect: false,
+              enableSuggestions: false,
+              textInputAction: TextInputAction.next,
+              decoration: const InputDecoration(
+                labelText: 'API 路径',
+                helperText: '默认 /chat/completions',
+                prefixIcon: Icon(Icons.account_tree_outlined),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Card(
+              child: ListTile(
+                leading: const Icon(Icons.hub_outlined),
+                title: const Text('大模型选择'),
+                subtitle: Text(
+                  _modelController.text.trim().isEmpty
+                      ? '尚未选择；点击后从 API 的 /models 列表读取。'
+                      : _modelController.text.trim(),
+                ),
+                trailing: const Icon(Icons.chevron_right_outlined),
+                onTap: _pickModel,
+              ),
+            ),
+            if (_models.isNotEmpty) ...[
+              const SizedBox(height: 4),
+              Text(
+                '已缓存 ${_models.length} 个模型；可随时重新打开选择页刷新。',
+                style: theme.textTheme.bodySmall,
+              ),
+            ],
+            const SizedBox(height: 8),
+            TextField(
+              controller: _modelController,
+              autocorrect: false,
+              enableSuggestions: false,
+              decoration: const InputDecoration(
+                labelText: '手动填写模型 ID',
+                helperText: '当服务不支持 /models 时，可按服务文档手动填写。',
+                prefixIcon: Icon(Icons.edit_outlined),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Card(
+              child: SwitchListTile.adaptive(
+                secondary: const Icon(Icons.psychology_outlined),
+                title: const Text('使用深度思考'),
+                subtitle: const Text(
+                  '开启时请求会携带 reasoning_effort=medium。仅在当前模型与兼容服务支持该参数时开启；如返回参数错误，请关闭后重试。',
+                ),
+                value: _useReasoning,
+                onChanged: (enabled) {
+                  setState(() => _useReasoning = enabled);
+                  unawaited(_persist());
+                },
+              ),
+            ),
+            const SizedBox(height: 16),
+            Text('AI 提示词', style: theme.textTheme.titleMedium),
+            const SizedBox(height: 8),
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('内置提示词', style: theme.textTheme.titleSmall),
+                    const SizedBox(height: 8),
+                    const SelectableText(AiSummaryService.builtInPrompt),
+                    const SizedBox(height: 16),
+                    TextField(
+                      controller: _promptController,
+                      minLines: 3,
+                      maxLines: 6,
+                      decoration: const InputDecoration(
+                        labelText: '附加提示词（可选）',
+                        helperText: '附加要求会与内置“保留情节完整性”规则一同发送。',
+                        alignLabelWithHint: true,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            FilledButton.icon(
+              onPressed: _isTesting ? null : _testConnection,
+              icon: _isTesting
+                  ? const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.network_check_outlined),
+              label: Text(_isTesting ? '正在测试连接…' : '测试 AI 连通性并读取模型'),
+            ),
+            if (_statusMessage != null) ...[
+              const SizedBox(height: 12),
+              Card(
+                color: _statusMessage!.startsWith('连接正常')
+                    ? theme.colorScheme.secondaryContainer
+                    : theme.colorScheme.errorContainer,
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Text(
+                    _statusMessage!,
+                    style: TextStyle(
+                      color: _statusMessage!.startsWith('连接正常')
+                          ? theme.colorScheme.onSecondaryContainer
+                          : theme.colorScheme.onErrorContainer,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class AiModelPickerPage extends StatefulWidget {
+  const AiModelPickerPage({required this.settings, super.key});
+
+  final StoredAiSettings settings;
+
+  @override
+  State<AiModelPickerPage> createState() => _AiModelPickerPageState();
+}
+
+class _AiModelPickerPageState extends State<AiModelPickerPage> {
+  List<AiModelInfo> _models = const [];
+  String? _errorMessage;
+  bool _isLoading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_loadModels());
+  }
+
+  Future<void> _loadModels() async {
+    setState(() {
+      _isLoading = true;
+      _errorMessage = null;
+    });
+    final service = AiSummaryService();
+    try {
+      final models = await service.fetchModels(widget.settings);
+      if (mounted) {
+        setState(() => _models = models);
+      }
+    } on FormatException catch (error) {
+      if (mounted) {
+        setState(() => _errorMessage = error.message.toString());
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() => _errorMessage = '读取模型失败，请检查网络、API Key 和 /models 接口。');
+      }
+    } finally {
+      service.dispose();
+      if (mounted) {
+        setState(() => _isLoading = false);
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('选择支持的大模型'),
+        actions: [
+          IconButton(
+            tooltip: '刷新模型列表',
+            onPressed: _isLoading ? null : _loadModels,
+            icon: const Icon(Icons.refresh_outlined),
+          ),
+        ],
+      ),
+      body: SafeArea(
+        child: _isLoading
+            ? const Center(child: CircularProgressIndicator())
+            : _errorMessage != null
+            ? Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(24),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(Icons.cloud_off_outlined, size: 56),
+                      const SizedBox(height: 16),
+                      Text(_errorMessage!, textAlign: TextAlign.center),
+                      const SizedBox(height: 16),
+                      FilledButton.icon(
+                        onPressed: _loadModels,
+                        icon: const Icon(Icons.refresh_outlined),
+                        label: const Text('重试读取'),
+                      ),
+                    ],
+                  ),
+                ),
+              )
+            : ListView.builder(
+                padding: const EdgeInsets.all(16),
+                itemCount: _models.length + 1,
+                itemBuilder: (context, index) {
+                  if (index == 0) {
+                    return const Padding(
+                      padding: EdgeInsets.only(bottom: 12),
+                      child: Card(
+                        child: Padding(
+                          padding: EdgeInsets.all(16),
+                          child: Text(
+                            '以下模型来自当前 API 的 /models 返回。选择后会自动保存至本机 AI 设置。',
+                          ),
+                        ),
+                      ),
+                    );
+                  }
+                  final model = _models[index - 1];
+                  return Card(
+                    margin: const EdgeInsets.only(bottom: 10),
+                    child: ListTile(
+                      leading: const Icon(Icons.smart_toy_outlined),
+                      title: Text(model.id),
+                      subtitle: model.displayName == model.id
+                          ? null
+                          : Text(model.displayName),
+                      trailing: const Icon(Icons.chevron_right_outlined),
+                      onTap: () => Navigator.of(context).pop(model.id),
+                    ),
+                  );
+                },
+              ),
+      ),
+    );
+  }
+}
+
+class AiSegmentSummaryPage extends StatefulWidget {
+  const AiSegmentSummaryPage({
+    required this.chunks,
+    required this.maxCharacters,
+    super.key,
+  });
+
+  final List<String> chunks;
+  final int maxCharacters;
+
+  @override
+  State<AiSegmentSummaryPage> createState() => _AiSegmentSummaryPageState();
+}
+
+class _AiSegmentSummaryPageState extends State<AiSegmentSummaryPage> {
+  late List<String> _summarizedChunks;
+  late int _targetCharacters;
+  final Set<int> _selectedIndexes = <int>{};
+  SummaryRichness _richness = SummaryRichness.balanced;
+  StoredAiSettings? _settings;
+  bool _isLoadingSettings = true;
+  bool _isSummarizing = false;
+  bool _cancelRequested = false;
+  int _completed = 0;
+  int _total = 0;
+  String? _errorMessage;
+
+  @override
+  void initState() {
+    super.initState();
+    _summarizedChunks = List<String>.of(widget.chunks);
+    _targetCharacters = widget.maxCharacters.clamp(20, 250).toInt();
+    unawaited(_loadSettings());
+  }
+
+  Future<void> _loadSettings() async {
+    final settings = await LocalAppStore.instance.loadAiSettings();
+    if (mounted) {
+      setState(() {
+        _settings = settings;
+        _isLoadingSettings = false;
+      });
+    }
+  }
+
+  Future<void> _openSettings() async {
+    await Navigator.of(context)
+        .push<void>(MaterialPageRoute(builder: (_) => const AiSettingsPage()));
+    await _loadSettings();
+  }
+
+  void _toggleAll() {
+    setState(() {
+      if (_selectedIndexes.length == _summarizedChunks.length) {
+        _selectedIndexes.clear();
+      } else {
+        _selectedIndexes
+          ..clear()
+          ..addAll(
+            List<int>.generate(_summarizedChunks.length, (index) => index),
+          );
+      }
+    });
+  }
+
+  Future<void> _summarize() async {
+    final settings = _settings;
+    if (settings == null) {
+      return;
+    }
+    if (settings.apiKey.trim().isEmpty || settings.model.trim().isEmpty) {
+      setState(
+        () => _errorMessage = '请先在 AI 设置中填写 API Key，并从模型选择页选择或手动填写模型 ID。',
+      );
+      return;
+    }
+    if (_selectedIndexes.isEmpty) {
+      setState(() => _errorMessage = '请至少选择一个分段，或使用“全选分段”。');
+      return;
+    }
+    final targetIndexes = _selectedIndexes.toList()
+      ..sort((left, right) => right.compareTo(left));
+    setState(() {
+      _isSummarizing = true;
+      _cancelRequested = false;
+      _completed = 0;
+      _total = targetIndexes.length;
+      _errorMessage = null;
+    });
+    final service = AiSummaryService();
+    try {
+      for (final index in targetIndexes) {
+        if (_cancelRequested) {
+          break;
+        }
+        final source = _summarizedChunks[index];
+        final summary = await service.summarizeSegment(
+          settings: settings,
+          content: source,
+          targetCharacters: _targetCharacters,
+          richness: _richness,
+        );
+        if (!mounted) {
+          return;
+        }
+        final normalized = NovelTextSplitter.split(
+          summary,
+          maxCharacters: widget.maxCharacters,
+        );
+        if (normalized.isEmpty) {
+          throw const FormatException('AI 返回内容在分段校验后为空。');
+        }
+        _summarizedChunks.replaceRange(index, index + 1, normalized);
+        setState(() => _completed++);
+      }
+      if (mounted && _cancelRequested) {
+        setState(() => _errorMessage = '已停止后续总结；已完成的 $_completed 段可继续应用。');
+      }
+    } on FormatException catch (error) {
+      if (mounted) {
+        setState(() => _errorMessage = error.message.toString());
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() => _errorMessage = 'AI 总结失败，请检查网络、模型能力、深度思考参数和服务限额后重试。');
+      }
+    } finally {
+      service.dispose();
+      if (mounted) {
+        setState(() => _isSummarizing = false);
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final settings = _settings;
+    final maxTarget = widget.maxCharacters.clamp(20, 250).toDouble();
+    final progress = _total == 0 ? 0.0 : _completed / _total;
+    return PopScope(
+      canPop: !_isSummarizing,
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('AI 总结分段'),
+          actions: [
+            TextButton(
+              onPressed: _isSummarizing
+                  ? null
+                  : () => Navigator.of(context).pop(_summarizedChunks),
+              child: const Text('应用结果'),
+            ),
+          ],
+        ),
+        body: SafeArea(
+          child: _isLoadingSettings
+              ? const Center(child: CircularProgressIndicator())
+              : ListView(
+                  padding: const EdgeInsets.all(16),
+                  children: [
+                    Card(
+                      color: theme.colorScheme.primaryContainer,
+                      child: Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text('情节完整性优先', style: theme.textTheme.titleMedium),
+                            const SizedBox(height: 8),
+                            const Text(
+                              '内置提示词要求 AI 保留人物、事件、转折、线索和因果关系。总结结果会再次按当前最大分段字数校验；仅在你点击“应用结果”后写回书库。',
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    Card(
+                      child: ListTile(
+                        leading: const Icon(Icons.hub_outlined),
+                        title: const Text('当前 AI 配置'),
+                        subtitle: Text(
+                          settings == null || settings.model.trim().isEmpty
+                              ? '尚未选择模型'
+                              : '${settings.apiName} · ${settings.model}${settings.useReasoning ? ' · 深度思考' : ''}',
+                        ),
+                        trailing: const Icon(Icons.settings_outlined),
+                        onTap: _isSummarizing ? null : _openSettings,
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    Row(
+                      children: [
+                        Text('总结范围', style: theme.textTheme.titleMedium),
+                        const Spacer(),
+                        TextButton(
+                          onPressed: _isSummarizing ? null : _toggleAll,
+                          child: Text(
+                            _selectedIndexes.length == _summarizedChunks.length
+                                ? '取消全选'
+                                : '全选分段',
+                          ),
+                        ),
+                      ],
+                    ),
+                    Text(
+                      '已选择 ${_selectedIndexes.length}/${_summarizedChunks.length} 段。可以仅勾选部分段落，或一次总结全部段落。',
+                      style: theme.textTheme.bodySmall,
+                    ),
+                    const SizedBox(height: 12),
+                    Card(
+                      child: Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            Text(
+                              '单段目标字数：$_targetCharacters',
+                              style: theme.textTheme.titleSmall,
+                            ),
+                            Slider(
+                              value: _targetCharacters.toDouble(),
+                              min: 20,
+                              max: maxTarget,
+                              divisions: (maxTarget - 20).round(),
+                              label: '$_targetCharacters 字',
+                              onChanged: _isSummarizing
+                                  ? null
+                                  : (value) => setState(
+                                      () => _targetCharacters = value.round(),
+                                    ),
+                            ),
+                            Text(
+                              '目标字数不会超过当前单段最大字数 ${widget.maxCharacters}。',
+                              style: theme.textTheme.bodySmall,
+                            ),
+                            const SizedBox(height: 16),
+                            Text('内容丰富程度', style: theme.textTheme.titleSmall),
+                            const SizedBox(height: 8),
+                            SegmentedButton<SummaryRichness>(
+                              segments: SummaryRichness.values
+                                  .map(
+                                    (value) => ButtonSegment(
+                                      value: value,
+                                      label: Text(value.title),
+                                    ),
+                                  )
+                                  .toList(growable: false),
+                              selected: {_richness},
+                              onSelectionChanged: _isSummarizing
+                                  ? null
+                                  : (selected) => setState(
+                                      () => _richness = selected.first,
+                                    ),
+                            ),
+                            const SizedBox(height: 8),
+                            Text(
+                              _richness.description,
+                              style: theme.textTheme.bodySmall,
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    if (_isSummarizing) ...[
+                      LinearProgressIndicator(value: progress),
+                      const SizedBox(height: 8),
+                      Text(
+                        '正在总结 $_completed/$_total 段… 当前请求完成后会响应取消。',
+                        textAlign: TextAlign.center,
+                      ),
+                      const SizedBox(height: 12),
+                      OutlinedButton.icon(
+                        onPressed: () =>
+                            setState(() => _cancelRequested = true),
+                        icon: const Icon(Icons.cancel_outlined),
+                        label: const Text('停止后续总结'),
+                      ),
+                    ] else
+                      FilledButton.icon(
+                        onPressed: _summarize,
+                        icon: const Icon(Icons.auto_awesome_outlined),
+                        label: Text(
+                          _selectedIndexes.isEmpty
+                              ? '选择分段后开始 AI 总结'
+                              : '总结已选 ${_selectedIndexes.length} 段',
+                        ),
+                      ),
+                    if (_errorMessage != null) ...[
+                      const SizedBox(height: 12),
+                      Card(
+                        color: _errorMessage!.startsWith('已停止')
+                            ? theme.colorScheme.tertiaryContainer
+                            : theme.colorScheme.errorContainer,
+                        child: Padding(
+                          padding: const EdgeInsets.all(16),
+                          child: Text(
+                            _errorMessage!,
+                            style: TextStyle(
+                              color: _errorMessage!.startsWith('已停止')
+                                  ? theme.colorScheme.onTertiaryContainer
+                                  : theme.colorScheme.onErrorContainer,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                    const SizedBox(height: 16),
+                    Text('选择分段', style: theme.textTheme.titleMedium),
+                    const SizedBox(height: 8),
+                    for (
+                      var index = 0;
+                      index < _summarizedChunks.length;
+                      index++
+                    )
+                      Card(
+                        margin: const EdgeInsets.only(bottom: 10),
+                        child: CheckboxListTile(
+                          value: _selectedIndexes.contains(index),
+                          controlAffinity: ListTileControlAffinity.leading,
+                          title: Text(
+                            '第 ${index + 1} 段 · ${_summarizedChunks[index].runes.length} 字',
+                          ),
+                          subtitle: Text(
+                            _summarizedChunks[index],
+                            maxLines: 3,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          onChanged: _isSummarizing
+                              ? null
+                              : (selected) => setState(() {
+                                  if (selected == true) {
+                                    _selectedIndexes.add(index);
+                                  } else {
+                                    _selectedIndexes.remove(index);
+                                  }
+                                }),
+                        ),
+                      ),
+                  ],
+                ),
+        ),
+      ),
+    );
+  }
+}
+
 class NetworkApiSettingsPage extends StatefulWidget {
   const NetworkApiSettingsPage({super.key});
 
@@ -5228,6 +6460,181 @@ class NetworkApiImportDetailPage extends StatelessWidget {
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+class NetworkBookStoragePage extends StatefulWidget {
+  const NetworkBookStoragePage({
+    required this.books,
+    required this.selectedBookId,
+    required this.onDelete,
+    super.key,
+  });
+
+  final List<StoredLibraryBook> books;
+  final String? selectedBookId;
+  final Future<void> Function(StoredLibraryBook book) onDelete;
+
+  @override
+  State<NetworkBookStoragePage> createState() => _NetworkBookStoragePageState();
+}
+
+class _NetworkBookStoragePageState extends State<NetworkBookStoragePage> {
+  late List<StoredLibraryBook> _books;
+  String? _deletingBookId;
+
+  @override
+  void initState() {
+    super.initState();
+    _books = List<StoredLibraryBook>.of(widget.books);
+  }
+
+  Future<void> _delete(StoredLibraryBook book) async {
+    final metadata = BookMetadataResolver.resolve(
+      fileName: book.fileName,
+      text: book.text,
+    );
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        icon: const Icon(Icons.delete_outline),
+        title: const Text('删除已下载图书？'),
+        content: Text(
+          '将从本地书库移除《${metadata.title}》及其发送断点。此操作不会影响在线书源，可以日后重新下载。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton.icon(
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(dialogContext).colorScheme.error,
+              foregroundColor: Theme.of(dialogContext).colorScheme.onError,
+            ),
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            icon: const Icon(Icons.delete_outline),
+            label: const Text('删除'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) {
+      return;
+    }
+    setState(() => _deletingBookId = book.id);
+    try {
+      await widget.onDelete(book);
+      if (!mounted) {
+        return;
+      }
+      setState(() => _books.removeWhere((item) => item.id == book.id));
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('已删除《${metadata.title}》。')));
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('删除失败：$error')));
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _deletingBookId = null);
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Scaffold(
+      appBar: AppBar(title: const Text('书源下载管理')),
+      body: SafeArea(
+        child: _books.isEmpty
+            ? Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(24),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        Icons.inventory_2_outlined,
+                        size: 56,
+                        color: theme.colorScheme.primary,
+                      ),
+                      const SizedBox(height: 16),
+                      Text('暂未保存书源下载图书', style: theme.textTheme.titleMedium),
+                      const SizedBox(height: 8),
+                      const Text(
+                        '从网络 API 或公共领域目录完成下载、校验和导入后，图书会自动出现在这里。',
+                        textAlign: TextAlign.center,
+                      ),
+                    ],
+                  ),
+                ),
+              )
+            : ListView.builder(
+                padding: const EdgeInsets.all(16),
+                itemCount: _books.length + 1,
+                itemBuilder: (context, index) {
+                  if (index == 0) {
+                    return Padding(
+                      padding: const EdgeInsets.only(bottom: 12),
+                      child: Card(
+                        color: theme.colorScheme.secondaryContainer,
+                        child: const Padding(
+                          padding: EdgeInsets.all(16),
+                          child: Text(
+                            '这里仅管理通过书源下载并导入的图书。删除会同时清理该书的发送断点；本地导入图书不受影响。',
+                          ),
+                        ),
+                      ),
+                    );
+                  }
+                  final book = _books[index - 1];
+                  final metadata = BookMetadataResolver.resolve(
+                    fileName: book.fileName,
+                    text: book.text,
+                  );
+                  final deleting = _deletingBookId == book.id;
+                  final selected = widget.selectedBookId == book.id;
+                  return Card(
+                    margin: const EdgeInsets.only(bottom: 12),
+                    child: ListTile(
+                      leading: CircleAvatar(
+                        backgroundColor: theme.colorScheme.primaryContainer,
+                        foregroundColor: theme.colorScheme.onPrimaryContainer,
+                        child: const Icon(Icons.cloud_download_outlined),
+                      ),
+                      title: Text(
+                        metadata.title,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      subtitle: Text(
+                        '${book.text.runes.length} 个字符 · ${book.fileName ?? '网络图书.txt'}${selected ? ' · 当前选中' : ''}',
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      isThreeLine: false,
+                      trailing: deleting
+                          ? const SizedBox(
+                              width: 24,
+                              height: 24,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : IconButton(
+                              tooltip: '删除已下载图书',
+                              onPressed: _deletingBookId == null
+                                  ? () => _delete(book)
+                                  : null,
+                              icon: const Icon(Icons.delete_outline),
+                            ),
+                    ),
+                  );
+                },
+              ),
       ),
     );
   }
@@ -6060,6 +7467,7 @@ class NovelTextSplitter {
     required int maxCharacters,
     bool compactContent = false,
     bool removeEmoji = false,
+    bool richContent = false,
   }) {
     if (maxCharacters <= 0) {
       throw ArgumentError.value(maxCharacters, 'maxCharacters', '必须大于 0。');
@@ -6068,6 +7476,7 @@ class NovelTextSplitter {
       source,
       compactContent: compactContent,
       removeEmoji: removeEmoji,
+      richContent: richContent,
     );
     if (normalized.isEmpty) {
       return const [];
@@ -6079,7 +7488,7 @@ class NovelTextSplitter {
 
     while (start < runes.length) {
       var end = math.min(start + maxCharacters, runes.length);
-      if (end < runes.length) {
+      if (end < runes.length && !richContent) {
         final preferredBreak = _findPreferredBreak(runes, start, end);
         if (preferredBreak != null) {
           end = preferredBreak;
@@ -6099,10 +7508,14 @@ class NovelTextSplitter {
     String source, {
     bool compactContent = false,
     bool removeEmoji = false,
+    bool richContent = false,
   }) {
     var normalized = source.replaceAll('\r\n', '\n').replaceAll('\r', '\n');
-    if (removeEmoji) {
+    if (removeEmoji || richContent) {
       normalized = normalized.replaceAll(_emojiPattern, '');
+    }
+    if (richContent) {
+      normalized = normalized.replaceAll(_richContentPunctuationPattern, '');
     }
     if (compactContent) {
       normalized = normalized
@@ -6115,6 +7528,11 @@ class NovelTextSplitter {
 
   static final RegExp _emojiPattern = RegExp(
     r'[\u{1F000}-\u{1FAFF}\u{1FC00}-\u{1FFFD}\u{2600}-\u{27BF}\u{2300}-\u{23FF}\u{200D}\u{FE0F}\u{FE0E}]',
+    unicode: true,
+  );
+
+  static final RegExp _richContentPunctuationPattern = RegExp(
+    r'[，、,:：;；]',
     unicode: true,
   );
 

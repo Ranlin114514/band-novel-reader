@@ -16,6 +16,7 @@ class StoredNovelDocument {
     required this.wearablePresetMaxCharacters,
     required this.compactSegmentContent,
     required this.removeEmojiFromSegments,
+    required this.richSegmentContent,
   });
 
   final String text;
@@ -30,7 +31,10 @@ class StoredNovelDocument {
   final int? wearablePresetMaxCharacters;
   final bool compactSegmentContent;
   final bool removeEmojiFromSegments;
+  final bool richSegmentContent;
 }
+
+enum BookStorageSource { local, network }
 
 class StoredLibraryBook {
   const StoredLibraryBook({
@@ -38,18 +42,21 @@ class StoredLibraryBook {
     required this.text,
     required this.fileName,
     required this.customChunks,
+    this.source = BookStorageSource.local,
   });
 
   final String id;
   final String text;
   final String? fileName;
   final List<String>? customChunks;
+  final BookStorageSource source;
 
   Map<String, Object?> toJson() => {
     'id': id,
     'text': text,
     'fileName': fileName,
     'customChunks': customChunks,
+    'source': source.name,
   };
 
   static StoredLibraryBook? fromJson(Object? value) {
@@ -61,11 +68,18 @@ class StoredLibraryBook {
     if (id is! String || id.isEmpty || text is! String) {
       return null;
     }
+    final sourceValue = value['source'];
+    final source = sourceValue is String
+        ? BookStorageSource.values
+              .where((item) => item.name == sourceValue)
+              .firstOrNull
+        : null;
     return StoredLibraryBook(
       id: id,
       text: text,
       fileName: value['fileName'] as String?,
       customChunks: _decodeChunksFromValue(value['customChunks']),
+      source: source ?? BookStorageSource.local,
     );
   }
 }
@@ -87,6 +101,28 @@ class StoredNetworkImportSettings {
   final String url;
   final String title;
   final String authorization;
+}
+
+class StoredAiSettings {
+  const StoredAiSettings({
+    required this.providerIndex,
+    required this.apiName,
+    required this.apiKey,
+    required this.baseUrl,
+    required this.chatPath,
+    required this.model,
+    required this.useReasoning,
+    required this.customPrompt,
+  });
+
+  final int providerIndex;
+  final String apiName;
+  final String apiKey;
+  final String baseUrl;
+  final String chatPath;
+  final String model;
+  final bool useReasoning;
+  final String customPrompt;
 }
 
 class StoredSendingSession {
@@ -177,6 +213,17 @@ class LocalAppStore {
   static const _networkApiAuthorizationKey = 'network_api_authorization';
   static const _compactSegmentContentKey = 'compact_segment_content';
   static const _removeEmojiFromSegmentsKey = 'remove_emoji_from_segments';
+  static const _richSegmentContentKey = 'rich_segment_content';
+  static const _startupContentRecommendationKey =
+      'startup_content_recommendation';
+  static const _aiProviderIndexKey = 'ai_provider_index';
+  static const _aiApiNameKey = 'ai_api_name';
+  static const _aiApiKeyKey = 'ai_api_key';
+  static const _aiBaseUrlKey = 'ai_base_url';
+  static const _aiChatPathKey = 'ai_chat_path';
+  static const _aiModelKey = 'ai_model';
+  static const _aiUseReasoningKey = 'ai_use_reasoning';
+  static const _aiCustomPromptKey = 'ai_custom_prompt';
   static const _deferredUpdateTagKey = 'deferred_update_tag';
 
   Future<StoredNovelDocument> loadDocument() async {
@@ -208,6 +255,7 @@ class LocalAppStore {
           preferences.getBool(_compactSegmentContentKey) ?? false,
       removeEmojiFromSegments:
           preferences.getBool(_removeEmojiFromSegmentsKey) ?? false,
+      richSegmentContent: preferences.getBool(_richSegmentContentKey) ?? false,
     );
   }
 
@@ -220,6 +268,7 @@ class LocalAppStore {
     required List<String>? customChunks,
     required bool compactSegmentContent,
     required bool removeEmojiFromSegments,
+    required bool richSegmentContent,
   }) async {
     final preferences = await SharedPreferences.getInstance();
     await _saveSettings(
@@ -229,6 +278,7 @@ class LocalAppStore {
       intervalMilliseconds: intervalMilliseconds,
       compactSegmentContent: compactSegmentContent,
       removeEmojiFromSegments: removeEmojiFromSegments,
+      richSegmentContent: richSegmentContent,
     );
     await preferences.setString(_textKey, text);
     if (fileName == null || fileName.isEmpty) {
@@ -304,6 +354,7 @@ class LocalAppStore {
     required int intervalMilliseconds,
     required bool compactSegmentContent,
     required bool removeEmojiFromSegments,
+    required bool richSegmentContent,
   }) async {
     final preferences = await SharedPreferences.getInstance();
     await _saveSettings(
@@ -313,6 +364,7 @@ class LocalAppStore {
       intervalMilliseconds: intervalMilliseconds,
       compactSegmentContent: compactSegmentContent,
       removeEmojiFromSegments: removeEmojiFromSegments,
+      richSegmentContent: richSegmentContent,
     );
   }
 
@@ -323,6 +375,49 @@ class LocalAppStore {
       title: preferences.getString(_networkApiTitleKey) ?? '',
       authorization: preferences.getString(_networkApiAuthorizationKey) ?? '',
     );
+  }
+
+  Future<StoredAiSettings> loadAiSettings() async {
+    final preferences = await SharedPreferences.getInstance();
+    return StoredAiSettings(
+      providerIndex: (preferences.getInt(_aiProviderIndexKey) ?? 0)
+          .clamp(0, 1)
+          .toInt(),
+      apiName: preferences.getString(_aiApiNameKey) ?? 'OpenAI',
+      apiKey: preferences.getString(_aiApiKeyKey) ?? '',
+      baseUrl:
+          preferences.getString(_aiBaseUrlKey) ?? 'https://api.openai.com/v1',
+      chatPath: preferences.getString(_aiChatPathKey) ?? '/chat/completions',
+      model: preferences.getString(_aiModelKey) ?? '',
+      useReasoning: preferences.getBool(_aiUseReasoningKey) ?? false,
+      customPrompt: preferences.getString(_aiCustomPromptKey) ?? '',
+    );
+  }
+
+  Future<void> saveAiSettings({
+    required int providerIndex,
+    required String apiName,
+    required String apiKey,
+    required String baseUrl,
+    required String chatPath,
+    required String model,
+    required bool useReasoning,
+    required String customPrompt,
+  }) async {
+    final preferences = await SharedPreferences.getInstance();
+    await Future.wait([
+      preferences.setInt(
+        _aiProviderIndexKey,
+        providerIndex.clamp(0, 1).toInt(),
+      ),
+      preferences.setString(_aiApiNameKey, apiName.trim()),
+      preferences.setString(_aiApiKeyKey, apiKey.trim()),
+      preferences.setString(_aiBaseUrlKey, baseUrl.trim()),
+      preferences.setString(_aiChatPathKey, chatPath.trim()),
+      preferences.setString(_aiModelKey, model.trim()),
+      preferences.setBool(_aiUseReasoningKey, useReasoning),
+      preferences.setString(_aiCustomPromptKey, customPrompt.trim()),
+    ]);
   }
 
   Future<String?> loadDeferredUpdateTag() async {
@@ -405,6 +500,21 @@ class LocalAppStore {
     await preferences.setBool(_startupScreenEnabledKey, enabled);
   }
 
+  Future<int> loadStartupContentRecommendation() async {
+    final preferences = await SharedPreferences.getInstance();
+    return (preferences.getInt(_startupContentRecommendationKey) ?? 0)
+        .clamp(0, 12)
+        .toInt();
+  }
+
+  Future<void> saveStartupContentRecommendation(int index) async {
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.setInt(
+      _startupContentRecommendationKey,
+      index.clamp(0, 12).toInt(),
+    );
+  }
+
   Future<bool> isDynamicColorEnabled() async {
     final preferences = await SharedPreferences.getInstance();
     return preferences.getBool(_dynamicColorEnabledKey) ?? false;
@@ -422,6 +532,7 @@ class LocalAppStore {
     required int intervalMilliseconds,
     required bool compactSegmentContent,
     required bool removeEmojiFromSegments,
+    required bool richSegmentContent,
   }) async {
     await preferences.setInt(
       _maxCharactersKey,
@@ -437,6 +548,7 @@ class LocalAppStore {
       _removeEmojiFromSegmentsKey,
       removeEmojiFromSegments,
     );
+    await preferences.setBool(_richSegmentContentKey, richSegmentContent);
   }
 
   Future<void> _saveCustomChunks(
@@ -602,6 +714,17 @@ class LocalAppStore {
         sessions.remove(bookId);
       }
       await _saveSendingSessions(preferences, sessions);
+    }
+  }
+
+  Future<void> removeSendingSessionForBook(String bookId) async {
+    final preferences = await SharedPreferences.getInstance();
+    final sessions = await loadSendingSessions();
+    sessions.remove(bookId);
+    await _saveSendingSessions(preferences, sessions);
+    final active = await loadSendingSession();
+    if (active?.bookId == bookId) {
+      await _clearLegacySendingSession(preferences);
     }
   }
 

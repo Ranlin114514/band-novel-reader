@@ -59,7 +59,7 @@ class AppUpdateCancelledException implements Exception {
 class AppUpdateService {
   AppUpdateService._();
 
-  static const currentReleaseTag = '2.2Alpha2';
+  static const currentReleaseTag = '2.2Alpha4';
   static const _repository = 'Ranlin114514/band-novel-reader';
   static const _timeout = Duration(seconds: 20);
   static const _maximumApkBytes = 250 * 1024 * 1024;

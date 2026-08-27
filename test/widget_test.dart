@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:novelnotifier/ai_summary_service.dart';
 import 'package:novelnotifier/app_update_service.dart';
 import 'package:novelnotifier/book_metadata.dart';
 import 'package:novelnotifier/local_app_store.dart';
@@ -53,6 +54,19 @@ void main() {
       );
 
       expect(chunks, ['第一段\n第二段\n第三段']);
+    });
+
+    test('内容丰富模式会删除 Emoji 与弱标点并填满非末尾分段', () {
+      const source = '甲，乙🙂、丙：丁；戊己';
+
+      final chunks = NovelTextSplitter.split(
+        source,
+        maxCharacters: 3,
+        richContent: true,
+      );
+
+      expect(chunks, ['甲乙丙', '丁戊己']);
+      expect(chunks.every((chunk) => chunk.runes.length == 3), isTrue);
     });
 
     test('空文本不会生成通知分片', () {
@@ -125,6 +139,69 @@ void main() {
     test('没有文件名时使用未命名小说', () {
       final metadata = BookMetadataResolver.resolve(fileName: null, text: '正文');
       expect(metadata.title, '未命名小说');
+    });
+  });
+
+  group('AiSummaryService', () {
+    test('读取兼容模型列表并携带深度思考参数完成单段总结', () async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      server.listen((request) async {
+        expect(request.headers.value('authorization'), 'Bearer ai-test-key');
+        if (request.uri.path == '/v1/models') {
+          request.response.headers.contentType = ContentType.json;
+          request.response.write(
+            jsonEncode({
+              'data': [
+                {'id': 'story-model', 'owned_by': 'test-provider'},
+              ],
+            }),
+          );
+        } else if (request.uri.path == '/v1/chat/completions') {
+          final body = jsonDecode(await utf8.decoder.bind(request).join());
+          expect(body['model'], 'story-model');
+          expect(body['reasoning_effort'], 'medium');
+          final messages = body['messages'] as List;
+          expect(messages.first['content'], contains('情节完整'));
+          request.response.headers.contentType = ContentType.json;
+          request.response.write(
+            jsonEncode({
+              'choices': [
+                {
+                  'message': {'content': '林舟收到信封，决定在雨停前出门。'},
+                },
+              ],
+            }),
+          );
+        } else {
+          request.response.statusCode = HttpStatus.notFound;
+          request.response.write('{}');
+        }
+        await request.response.close();
+      });
+      addTearDown(server.close);
+      final settings = StoredAiSettings(
+        providerIndex: 1,
+        apiName: '本地测试服务',
+        apiKey: 'ai-test-key',
+        baseUrl: 'http://${server.address.address}:${server.port}/v1',
+        chatPath: '/chat/completions',
+        model: 'story-model',
+        useReasoning: true,
+        customPrompt: '保留雨夜氛围。',
+      );
+      final service = AiSummaryService();
+      addTearDown(service.dispose);
+
+      final models = await service.fetchModels(settings);
+      final summary = await service.summarizeSegment(
+        settings: settings,
+        content: '林舟在雨夜收到一封没有署名的信，他决定在雨停前出门寻找寄信人。',
+        targetCharacters: 60,
+        richness: SummaryRichness.balanced,
+      );
+
+      expect(models.single.id, 'story-model');
+      expect(summary, '林舟收到信封，决定在雨停前出门。');
     });
   });
 
@@ -252,6 +329,7 @@ void main() {
         customChunks: const ['测试', '正文'],
         compactSegmentContent: true,
         removeEmojiFromSegments: true,
+        richSegmentContent: true,
       );
       await LocalAppStore.instance.saveSendingSession(
         chunks: const ['测试', '正文'],
@@ -270,6 +348,7 @@ void main() {
       expect(document.customChunks, const ['测试', '正文']);
       expect(document.compactSegmentContent, isTrue);
       expect(document.removeEmojiFromSegments, isTrue);
+      expect(document.richSegmentContent, isTrue);
       expect(session?.nextIndex, 1);
       expect(session?.canResume, isTrue);
     });
@@ -288,6 +367,30 @@ void main() {
       expect(settings.authorization, 'Bearer demo-token');
     });
 
+    test('启动推荐和 AI 设置可以持久化恢复', () async {
+      await LocalAppStore.instance.saveStartupContentRecommendation(9);
+      await LocalAppStore.instance.saveAiSettings(
+        providerIndex: 1,
+        apiName: '兼容服务',
+        apiKey: 'local-key',
+        baseUrl: 'https://example.com/v1',
+        chatPath: '/chat/completions',
+        model: 'story-model',
+        useReasoning: true,
+        customPrompt: '保留关键线索。',
+      );
+
+      final recommendation = await LocalAppStore.instance
+          .loadStartupContentRecommendation();
+      final ai = await LocalAppStore.instance.loadAiSettings();
+
+      expect(recommendation, 9);
+      expect(ai.apiName, '兼容服务');
+      expect(ai.model, 'story-model');
+      expect(ai.useReasoning, isTrue);
+      expect(ai.customPrompt, '保留关键线索。');
+    });
+
     test('多书库与当前选择可以持久化恢复', () async {
       const books = [
         StoredLibraryBook(
@@ -301,6 +404,7 @@ void main() {
           text: '第二本正文',
           fileName: '第二本.txt',
           customChunks: ['第二本', '正文'],
+          source: BookStorageSource.network,
         ),
       ];
       await LocalAppStore.instance.saveLibrary(
@@ -313,6 +417,7 @@ void main() {
       expect(library.books.map((book) => book.id), ['book-one', 'book-two']);
       expect(library.selectedBookId, 'book-two');
       expect(library.books.last.customChunks, const ['第二本', '正文']);
+      expect(library.books.last.source, BookStorageSource.network);
     });
 
     test('不匹配书本标识的进度与清理不会影响活动会话', () async {
@@ -360,6 +465,7 @@ void main() {
         customChunks: null,
         compactSegmentContent: false,
         removeEmojiFromSegments: false,
+        richSegmentContent: false,
       );
       await LocalAppStore.instance.saveSendingSession(
         chunks: const ['保留'],
