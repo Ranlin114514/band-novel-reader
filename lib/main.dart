@@ -5461,6 +5461,9 @@ class _AiSegmentSummaryPageState extends State<AiSegmentSummaryPage> {
   }
 
   Future<void> _summarize() async {
+    if (_isSummarizing) {
+      return;
+    }
     final settings = _settings;
     if (settings == null) {
       return;
@@ -5510,8 +5513,13 @@ class _AiSegmentSummaryPageState extends State<AiSegmentSummaryPage> {
         _summarizedChunks.replaceRange(index, index + 1, normalized);
         setState(() => _completed++);
       }
-      if (mounted && _cancelRequested) {
-        setState(() => _errorMessage = '已停止后续总结；已完成的 $_completed 段可继续应用。');
+      if (mounted && _completed > 0) {
+        setState(() {
+          _selectedIndexes.clear();
+          if (_cancelRequested) {
+            _errorMessage = '已停止后续总结；已完成的 $_completed 段可继续应用。';
+          }
+        });
       }
     } on FormatException catch (error) {
       if (mounted) {
@@ -5821,6 +5829,9 @@ class _NetworkApiSettingsPageState extends State<NetworkApiSettingsPage> {
   }
 
   Future<void> _testApi() async {
+    if (_isTesting) {
+      return;
+    }
     final url = _urlController.text.trim();
     final uri = Uri.tryParse(url);
     if (url.isEmpty ||
@@ -6648,12 +6659,29 @@ class _PublicDomainBookSearchPageState
   bool _isSearching = false;
 
   @override
+  void initState() {
+    super.initState();
+    _queryController.addListener(_refreshSearchInput);
+  }
+
+  void _refreshSearchInput() {
+    if (mounted) {
+      setState(() {});
+    }
+  }
+
+  @override
   void dispose() {
-    _queryController.dispose();
+    _queryController
+      ..removeListener(_refreshSearchInput)
+      ..dispose();
     super.dispose();
   }
 
   Future<void> _search() async {
+    if (_isSearching) {
+      return;
+    }
     final query = _queryController.text.trim();
     if (query.isEmpty) {
       setState(() => _errorMessage = '请输入书名、作者或关键词后再搜索。');
