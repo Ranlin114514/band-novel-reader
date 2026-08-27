@@ -42,6 +42,7 @@ class StoredLibraryBook {
     required this.text,
     required this.fileName,
     required this.customChunks,
+    this.initialChunks,
     this.source = BookStorageSource.local,
   });
 
@@ -49,6 +50,7 @@ class StoredLibraryBook {
   final String text;
   final String? fileName;
   final List<String>? customChunks;
+  final List<String>? initialChunks;
   final BookStorageSource source;
 
   Map<String, Object?> toJson() => {
@@ -56,6 +58,7 @@ class StoredLibraryBook {
     'text': text,
     'fileName': fileName,
     'customChunks': customChunks,
+    'initialChunks': initialChunks,
     'source': source.name,
   };
 
@@ -79,6 +82,7 @@ class StoredLibraryBook {
       text: text,
       fileName: value['fileName'] as String?,
       customChunks: _decodeChunksFromValue(value['customChunks']),
+      initialChunks: _decodeChunksFromValue(value['initialChunks']),
       source: source ?? BookStorageSource.local,
     );
   }

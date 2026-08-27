@@ -786,6 +786,12 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
     }
   }
 
+  List<String> _captureInitialChunks(String text) {
+    // Text recovery always returns to the original import baseline, rather than
+    // reapplying any later character-limit or content-processing settings.
+    return NovelTextSplitter.split(text, maxCharacters: 120);
+  }
+
   Future<void> _importBooks() async {
     try {
       final files = await FilePicker.pickFiles(type: FileType.any);
@@ -803,6 +809,7 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
               text: decoded.text,
               fileName: file.name,
               customChunks: null,
+              initialChunks: _captureInitialChunks(decoded.text),
             ),
           );
         } on FormatException {
@@ -1019,6 +1026,7 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
       text: downloaded.text,
       fileName: '${downloaded.title}.txt',
       customChunks: null,
+      initialChunks: _captureInitialChunks(downloaded.text),
       source: BookStorageSource.network,
     );
     final byIdentity = <String, StoredLibraryBook>{
@@ -1203,6 +1211,7 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
                 text: book.text,
                 fileName: book.fileName,
                 customChunks: null,
+                initialChunks: book.initialChunks,
                 source: book.source,
               ),
             )
@@ -1240,6 +1249,7 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
                     text: item.text,
                     fileName: item.fileName,
                     customChunks: adjusted,
+                    initialChunks: item.initialChunks,
                     source: item.source,
                   )
                 : item,
@@ -1265,7 +1275,7 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
         icon: const Icon(Icons.restore_page_outlined),
         title: const Text('恢复默认分段？'),
         content: const Text(
-          '将清除当前图书在完整分段预览、批量调整或 AI 总结后保存的自定义分段，并按现有字数、内容紧凑、Emoji 清理和内容丰富规则重新生成。该图书的发送断点也会清除。',
+          '将清除当前图书在完整分段预览、批量调整或 AI 总结后保存的自定义分段，恢复为刚导入时未启用内容处理功能的基础分段。该图书的发送断点也会清除。',
         ),
         actions: [
           TextButton(
@@ -1291,6 +1301,8 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
     final remainingSessions = Map<String, StoredSendingSession>.from(
       _sessionsByBook,
     )..remove(book.id);
+    final initialChunks =
+        book.initialChunks ?? _captureInitialChunks(book.text);
     setState(() {
       _books = _books
           .map(
@@ -1299,7 +1311,8 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
                     id: item.id,
                     text: item.text,
                     fileName: item.fileName,
-                    customChunks: null,
+                    customChunks: initialChunks,
+                    initialChunks: item.initialChunks ?? initialChunks,
                     source: item.source,
                   )
                 : item,
@@ -1314,7 +1327,7 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
       _isBackgroundRunning = false;
     });
     await _persistLibrary();
-    _showMessage('已恢复默认分段，并清除当前图书的发送断点。');
+    _showMessage('已恢复为刚导入时的基础分段，并清除当前图书的发送断点。');
   }
 
   Future<void> _startSelectedBook() async {
@@ -1477,6 +1490,7 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
               text: book.text,
               fileName: book.fileName,
               customChunks: null,
+              initialChunks: book.initialChunks,
               source: book.source,
             ),
           )
@@ -1518,6 +1532,7 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
               text: book.text,
               fileName: book.fileName,
               customChunks: null,
+              initialChunks: book.initialChunks,
               source: book.source,
             ),
           )

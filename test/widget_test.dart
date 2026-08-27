@@ -559,24 +559,26 @@ void main() {
       expect(library.books.last.source, BookStorageSource.network);
     });
 
-    test('清除自定义分段后会恢复原文的默认分段结果', () async {
+    test('文本恢复会使用导入时保存的基础分段快照', () async {
       const original = StoredLibraryBook(
         id: 'book-restore',
         text: '第一章。第二章。第三章。',
         fileName: '恢复测试.txt',
         customChunks: ['AI 改写的自定义分段'],
+        initialChunks: ['第一章。第二章。', '第三章。'],
       );
       await LocalAppStore.instance.saveLibrary(
         books: const [original],
         selectedBookId: original.id,
       );
       await LocalAppStore.instance.saveLibrary(
-        books: [
+        books: const [
           StoredLibraryBook(
-            id: original.id,
-            text: original.text,
-            fileName: original.fileName,
-            customChunks: null,
+            id: 'book-restore',
+            text: '第一章。第二章。第三章。',
+            fileName: '恢复测试.txt',
+            customChunks: ['第一章。第二章。', '第三章。'],
+            initialChunks: ['第一章。第二章。', '第三章。'],
           ),
         ],
         selectedBookId: original.id,
@@ -584,14 +586,10 @@ void main() {
 
       final restored = await LocalAppStore.instance.loadLibrary();
       final book = restored.books.single;
-      final defaultChunks = NovelTextSplitter.split(
-        book.text,
-        maxCharacters: 4,
-      );
 
-      expect(book.customChunks, isNull);
+      expect(book.customChunks, const ['第一章。第二章。', '第三章。']);
+      expect(book.initialChunks, const ['第一章。第二章。', '第三章。']);
       expect(book.text, original.text);
-      expect(defaultChunks, ['第一章。', '第二章。', '第三章。']);
     });
 
     test('不匹配书本标识的进度与清理不会影响活动会话', () async {
