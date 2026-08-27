@@ -33,9 +33,11 @@ Future<void> main() async {
   } catch (_) {
     // 后台服务在实际启动时会再次初始化；启动阶段不阻塞主界面呈现。
   }
-  await AppThemeController.instance.load();
-  final startupScreenEnabled = await LocalAppStore.instance
+  final themeLoading = AppThemeController.instance.load();
+  final startupScreenEnabledLoading = LocalAppStore.instance
       .isStartupScreenEnabled();
+  await themeLoading;
+  final startupScreenEnabled = await startupScreenEnabledLoading;
   runApp(
     NovelNotifierApp(
       themeController: AppThemeController.instance,
@@ -76,9 +78,13 @@ class AppThemeController extends ChangeNotifier {
   };
 
   Future<void> load() async {
-    final index = await LocalAppStore.instance.loadThemePreference();
+    final values = await Future.wait<Object>([
+      LocalAppStore.instance.loadThemePreference(),
+      LocalAppStore.instance.isDynamicColorEnabled(),
+    ]);
+    final index = values[0] as int;
     _preference = AppThemePreference.values[index.clamp(0, 2)];
-    _dynamicColorEnabled = await LocalAppStore.instance.isDynamicColorEnabled();
+    _dynamicColorEnabled = values[1] as bool;
   }
 
   Future<void> setPreference(AppThemePreference preference) async {
@@ -375,6 +381,7 @@ class _StartupQuotePageState extends State<StartupQuotePage> {
   }
 
   Future<void> _loadQuoteThenEnter() async {
+    final leaveAt = DateTime.now().add(const Duration(milliseconds: 1100));
     try {
       final index = await LocalAppStore.instance
           .loadStartupContentRecommendation();
@@ -392,7 +399,7 @@ class _StartupQuotePageState extends State<StartupQuotePage> {
             Uri.https('v1.hitokoto.cn', '/', query),
             headers: const {'Accept': 'application/json'},
           )
-          .timeout(const Duration(seconds: 2));
+          .timeout(const Duration(milliseconds: 700));
       if (response.statusCode == 200) {
         final decoded = jsonDecode(response.body);
         if (decoded is Map && decoded['hitokoto'] is String) {
@@ -421,7 +428,10 @@ class _StartupQuotePageState extends State<StartupQuotePage> {
       return;
     }
     setState(() => _visible = true);
-    await Future<void>.delayed(const Duration(milliseconds: 1600));
+    final remaining = leaveAt.difference(DateTime.now());
+    if (remaining.inMicroseconds > 0) {
+      await Future<void>.delayed(remaining);
+    }
     if (mounted) {
       Navigator.of(context).pushReplacement(
         MaterialPageRoute(builder: (_) => const LibraryHomePage()),
@@ -479,437 +489,6 @@ class _StartupQuotePageState extends State<StartupQuotePage> {
               ),
             ),
           ),
-        ),
-      ),
-    );
-  }
-}
-
-class NovelHomePage extends StatefulWidget {
-  const NovelHomePage({super.key});
-
-  @override
-  State<NovelHomePage> createState() => _NovelHomePageState();
-}
-
-class _NovelHomePageState extends State<NovelHomePage> {
-  String _novelText = '';
-  String? _fileName;
-  int _maxCharacters = 120;
-  bool _compactSegmentContent = false;
-  bool _removeEmojiFromSegments = false;
-  bool _richSegmentContent = false;
-  SendingConfig _sendingConfig = const SendingConfig.defaults();
-  List<String>? _customChunks;
-  StoredSendingSession? _resumeSession;
-  bool _isLoading = true;
-  late final AppLifecycleListener _lifecycleListener;
-
-  List<String> get _chunks =>
-      _customChunks ??
-      NovelTextSplitter.split(
-        _novelText,
-        maxCharacters: _maxCharacters,
-        compactContent: _compactSegmentContent,
-        removeEmoji: _removeEmojiFromSegments,
-        richContent: _richSegmentContent,
-      );
-
-  @override
-  void initState() {
-    super.initState();
-    _lifecycleListener = AppLifecycleListener(
-      onStateChange: (state) {
-        if (state != AppLifecycleState.resumed) {
-          unawaited(_persistDocument());
-        }
-      },
-    );
-    _restoreState();
-  }
-
-  @override
-  void dispose() {
-    _lifecycleListener.dispose();
-    super.dispose();
-  }
-
-  SendingMode _modeFromIndex(int index) {
-    return SendingMode.values[index.clamp(0, SendingMode.values.length - 1)];
-  }
-
-  Future<void> _restoreState() async {
-    final document = await LocalAppStore.instance.loadDocument();
-    final resumeSession = await LocalAppStore.instance.loadSendingSession();
-    final hasCompletedOnboarding = await LocalAppStore.instance
-        .hasCompletedOnboarding();
-    if (!mounted) {
-      return;
-    }
-    setState(() {
-      _novelText = document.text;
-      _fileName = document.fileName;
-      _maxCharacters = document.maxCharacters;
-      _compactSegmentContent = document.compactSegmentContent;
-      _removeEmojiFromSegments = document.removeEmojiFromSegments;
-      _richSegmentContent = document.richSegmentContent;
-      _sendingConfig = SendingConfig(
-        mode: _modeFromIndex(document.modeIndex),
-        intervalMilliseconds: document.intervalMilliseconds,
-      );
-      _customChunks = document.customChunks;
-      _resumeSession = resumeSession?.canResume == true ? resumeSession : null;
-      _isLoading = false;
-    });
-    if (!hasCompletedOnboarding) {
-      WidgetsBinding.instance.addPostFrameCallback((_) => _openOnboarding());
-    }
-  }
-
-  Future<void> _persistDocument() {
-    return LocalAppStore.instance.saveDocument(
-      text: _novelText,
-      fileName: _fileName,
-      maxCharacters: _maxCharacters,
-      modeIndex: _sendingConfig.mode.index,
-      intervalMilliseconds: _sendingConfig.intervalMilliseconds,
-      customChunks: _customChunks,
-      compactSegmentContent: _compactSegmentContent,
-      removeEmojiFromSegments: _removeEmojiFromSegments,
-      richSegmentContent: _richSegmentContent,
-    );
-  }
-
-  Future<void> _openEditor() async {
-    final result = await Navigator.of(context).push<EditorResult>(
-      MaterialPageRoute(
-        builder: (_) => NovelEditorPage(
-          initialText: _novelText,
-          initialFileName: _fileName,
-        ),
-      ),
-    );
-    if (result == null || !mounted) {
-      return;
-    }
-    setState(() {
-      _novelText = result.text;
-      _fileName = result.fileName;
-      _customChunks = null;
-    });
-    await _persistDocument();
-  }
-
-  Future<void> _openSettings() async {
-    final result = await Navigator.of(context).push<AppSettingsResult>(
-      MaterialPageRoute(
-        builder: (_) => UnifiedSettingsPage(
-          initialConfig: _sendingConfig,
-          initialMaxCharacters: _maxCharacters,
-          initialCompactSegmentContent: _compactSegmentContent,
-          initialRemoveEmojiFromSegments: _removeEmojiFromSegments,
-          initialRichSegmentContent: _richSegmentContent,
-        ),
-      ),
-    );
-    if (result == null || !mounted) {
-      return;
-    }
-    setState(() {
-      _sendingConfig = result.config;
-      _maxCharacters = result.maxCharacters;
-      _compactSegmentContent = result.compactSegmentContent;
-      _removeEmojiFromSegments = result.removeEmojiFromSegments;
-      _richSegmentContent = result.richSegmentContent;
-      _customChunks = null;
-    });
-    await _persistDocument();
-  }
-
-  Future<void> _requestPermission() async {
-    final granted = await NotificationService.instance.requestPermission();
-    if (!mounted) {
-      return;
-    }
-    _showMessage(granted ? '通知权限已授予。' : '未获得通知权限，请在系统设置中开启。');
-  }
-
-  Future<void> _openOnboarding() async {
-    if (!mounted) {
-      return;
-    }
-    final result = await Navigator.of(context).push<OnboardingResult>(
-      MaterialPageRoute(
-        fullscreenDialog: true,
-        builder: (_) => const OnboardingPage(),
-      ),
-    );
-    if (result == null || !mounted) {
-      return;
-    }
-    setState(() {
-      _maxCharacters = result.maxCharacters;
-      _customChunks = null;
-    });
-    await _persistDocument();
-  }
-
-  Future<void> _openPreview() async {
-    final chunks = _chunks;
-    if (chunks.isEmpty) {
-      _showMessage('请先导入或输入小说文本。');
-      return;
-    }
-    final adjustedChunks = await Navigator.of(context).push<List<String>>(
-      MaterialPageRoute(
-        builder: (_) => SegmentPreviewPage(
-          chunks: chunks,
-          maxCharacters: _maxCharacters,
-          completedCount: _resumeSession?.nextIndex ?? 0,
-        ),
-      ),
-    );
-    if (adjustedChunks == null || !mounted) {
-      return;
-    }
-    setState(() => _customChunks = adjustedChunks);
-    await _persistDocument();
-    _showMessage('已保存批量调整后的 ${adjustedChunks.length} 段文本。');
-  }
-
-  Future<void> _startTask() async {
-    final chunks = _chunks;
-    if (chunks.isEmpty) {
-      _showMessage('请先导入或输入小说文本。');
-      return;
-    }
-    final notificationBaseId = NotificationService.createBaseId(chunks.length);
-    await LocalAppStore.instance.saveSendingSession(
-      chunks: chunks,
-      nextIndex: 0,
-      modeIndex: _sendingConfig.mode.index,
-      intervalMilliseconds: _sendingConfig.intervalMilliseconds,
-      notificationBaseId: notificationBaseId,
-    );
-    if (!mounted) {
-      return;
-    }
-    setState(() {
-      _resumeSession = StoredSendingSession(
-        chunks: chunks,
-        nextIndex: 0,
-        modeIndex: _sendingConfig.mode.index,
-        intervalMilliseconds: _sendingConfig.intervalMilliseconds,
-        notificationBaseId: notificationBaseId,
-      );
-    });
-    await Navigator.of(context).push<void>(
-      MaterialPageRoute(
-        builder: (_) => SendingTaskPage(
-          chunks: chunks,
-          config: _sendingConfig,
-          initialIndex: 0,
-          notificationBaseId: notificationBaseId,
-        ),
-      ),
-    );
-    if (mounted) {
-      final session = await LocalAppStore.instance.loadSendingSession();
-      setState(
-        () => _resumeSession = session?.canResume == true ? session : null,
-      );
-    }
-  }
-
-  Future<void> _resumeTask() async {
-    final session = _resumeSession;
-    if (session == null || !session.canResume) {
-      _showMessage('没有可恢复的发送任务。');
-      return;
-    }
-    final mode = _modeFromIndex(session.modeIndex);
-    final config = SendingConfig(
-      mode: mode,
-      intervalMilliseconds: session.intervalMilliseconds,
-    );
-    await Navigator.of(context).push<void>(
-      MaterialPageRoute(
-        builder: (_) => SendingTaskPage(
-          chunks: session.chunks,
-          config: config,
-          initialIndex: session.nextIndex,
-          notificationBaseId: session.notificationBaseId,
-        ),
-      ),
-    );
-    if (mounted) {
-      final updated = await LocalAppStore.instance.loadSendingSession();
-      setState(
-        () => _resumeSession = updated?.canResume == true ? updated : null,
-      );
-    }
-  }
-
-  Future<void> _pauseFromHome() async {
-    final session = _resumeSession;
-    if (session == null || !session.canResume) {
-      _showMessage('当前没有可暂停的发送任务。');
-      return;
-    }
-    await BackgroundNovelSender.stop();
-    final refreshed = await LocalAppStore.instance.loadSendingSession();
-    if (mounted) {
-      setState(
-        () => _resumeSession = refreshed?.canResume == true ? refreshed : null,
-      );
-      _showMessage('已暂停发送，当前书籍和进度已保存。');
-    }
-  }
-
-  void _showMessage(String message) {
-    ScaffoldMessenger.of(context)
-      ..clearSnackBars()
-      ..showSnackBar(SnackBar(content: Text(message)));
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final chunks = _chunks;
-    final theme = Theme.of(context);
-    final hasBook = _novelText.trim().isNotEmpty;
-    final metadata = BookMetadataResolver.resolve(
-      fileName: _fileName,
-      text: _novelText,
-    );
-
-    if (_isLoading) {
-      return const Scaffold(body: Center(child: CircularProgressIndicator()));
-    }
-
-    return Scaffold(
-      appBar: AppBar(
-        leading: IconButton(
-          tooltip: '统一设置管理',
-          onPressed: _openSettings,
-          icon: const Icon(Icons.settings_outlined),
-        ),
-        title: const Text('我的书架'),
-        actions: [
-          IconButton(
-            tooltip: '导入或编辑书籍',
-            onPressed: _openEditor,
-            icon: const Icon(Icons.file_open_outlined),
-          ),
-        ],
-      ),
-      body: SafeArea(
-        child: ListView(
-          padding: const EdgeInsets.all(20),
-          children: [
-            GestureDetector(
-              onTap: _openEditor,
-              child: Card(
-                clipBehavior: Clip.antiAlias,
-                elevation: 2,
-                child: Padding(
-                  padding: const EdgeInsets.all(18),
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      _BookCover(title: metadata.title, hasBook: hasBook),
-                      const SizedBox(width: 18),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              metadata.title,
-                              maxLines: 2,
-                              overflow: TextOverflow.ellipsis,
-                              style: theme.textTheme.headlineSmall,
-                            ),
-                            const SizedBox(height: 8),
-                            Text(
-                              metadata.introduction,
-                              maxLines: 5,
-                              overflow: TextOverflow.ellipsis,
-                              style: theme.textTheme.bodyMedium,
-                            ),
-                            const SizedBox(height: 14),
-                            Text(
-                              hasBook
-                                  ? '${chunks.length} 段 · $_maxCharacters 字/段 · ${_sendingConfig.mode.title}'
-                                  : '点击此卡片导入图书',
-                              style: theme.textTheme.labelMedium,
-                            ),
-                          ],
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-            const SizedBox(height: 16),
-            if (_resumeSession != null)
-              Card(
-                color: theme.colorScheme.tertiaryContainer,
-                child: Padding(
-                  padding: const EdgeInsets.all(14),
-                  child: Text(
-                    '已保存发送进度：可从第 ${_resumeSession!.nextIndex + 1}/${_resumeSession!.chunks.length} 段继续。',
-                  ),
-                ),
-              ),
-            if (_resumeSession != null) const SizedBox(height: 12),
-            Row(
-              children: [
-                Expanded(
-                  child: FilledButton.icon(
-                    onPressed: hasBook ? _startTask : null,
-                    icon: const Icon(Icons.send_outlined),
-                    label: const Text('发送'),
-                  ),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: FilledButton.icon(
-                    onPressed: _resumeSession?.canResume == true
-                        ? _pauseFromHome
-                        : null,
-                    style: FilledButton.styleFrom(
-                      backgroundColor: theme.colorScheme.error,
-                      foregroundColor: theme.colorScheme.onError,
-                    ),
-                    icon: const Icon(Icons.pause_circle_outline),
-                    label: const Text('暂停'),
-                  ),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: FilledButton.icon(
-                    onPressed: _resumeSession?.canResume == true
-                        ? _resumeTask
-                        : null,
-                    icon: const Icon(Icons.play_circle_outline),
-                    label: const Text('继续'),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 16),
-            OutlinedButton.icon(
-              onPressed: hasBook ? _openPreview : null,
-              icon: const Icon(Icons.preview_outlined),
-              label: const Text('查看完整分段与批量调整'),
-            ),
-            const SizedBox(height: 10),
-            TextButton.icon(
-              onPressed: _requestPermission,
-              icon: const Icon(Icons.verified_user_outlined),
-              label: const Text('通知权限'),
-            ),
-          ],
         ),
       ),
     );
@@ -1032,13 +611,18 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
   }
 
   Future<void> _restoreState() async {
-    final document = await LocalAppStore.instance.loadDocument();
-    final library = await LocalAppStore.instance.loadLibrary();
-    final session = await LocalAppStore.instance.loadSendingSession();
-    final sessionsByBook = await LocalAppStore.instance.loadSendingSessions();
-    final onboardingCompleted = await LocalAppStore.instance
-        .hasCompletedOnboarding();
-    final isRunning = await FlutterForegroundTask.isRunningService;
+    final values = await Future.wait<Object?>([
+      LocalAppStore.instance.loadDocument(),
+      LocalAppStore.instance.loadLibrary(),
+      LocalAppStore.instance.loadSendingSession(),
+      LocalAppStore.instance.loadSendingSessions(),
+      LocalAppStore.instance.hasCompletedOnboarding(),
+    ]);
+    final document = values[0] as StoredNovelDocument;
+    final library = values[1] as StoredLibrary;
+    final session = values[2] as StoredSendingSession?;
+    final sessionsByBook = values[3] as Map<String, StoredSendingSession>;
+    final onboardingCompleted = values[4] as bool;
     if (!mounted) {
       return;
     }
@@ -1059,15 +643,12 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
         sessionsByBook: sessionsByBook,
         legacySession: session,
       );
-      _isBackgroundRunning = isRunning;
+      _isBackgroundRunning = false;
       _wearableBrandId = document.wearablePresetBrandId;
       _wearableBrandName = document.wearablePresetBrandName;
       _isLoading = false;
     });
-    final selectedSession = _session;
-    if (selectedSession?.canResume == true && !isRunning) {
-      unawaited(_recoverBackgroundSession(selectedSession!));
-    }
+    unawaited(_refreshAndRecoverBackgroundSession());
     if (!onboardingCompleted) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _openOnboarding());
     }
