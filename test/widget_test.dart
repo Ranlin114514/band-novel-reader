@@ -216,6 +216,7 @@ void main() {
               'tag_name': '2.2Alpha5',
               'name': 'Band Novel Reader 2.2Alpha5',
               'draft': false,
+              'prerelease': true,
               'assets': [
                 {
                   'name': 'band-novel-reader.apk',
@@ -241,6 +242,7 @@ void main() {
         update?.apkUrl,
         'https://gh-proxy.com/https://github.com/example/app.apk',
       );
+      expect(update?.isPrerelease, isTrue);
     });
 
     test('当前版本已是最新时不返回更新提示', () async {
@@ -460,6 +462,53 @@ void main() {
       expect(ai.model, 'story-model');
       expect(ai.useReasoning, isTrue);
       expect(ai.customPrompt, '保留关键线索。');
+    });
+
+    test('自动更新检查开关可以持久化恢复', () async {
+      await LocalAppStore.instance.saveAutomaticUpdateCheckEnabled(false);
+
+      final enabled = await LocalAppStore.instance
+          .isAutomaticUpdateCheckEnabled();
+
+      expect(enabled, isFalse);
+    });
+
+    test('每次延后会在递增五次启动后再次提示同一测试版', () async {
+      await LocalAppStore.instance.clearDeferredUpdateTag();
+      const update = AppUpdateInfo(
+        tag: '2.2Alpha5',
+        name: 'Band Novel Reader 2.2Alpha5',
+        releaseUrl: 'https://example.invalid/release',
+        apkUrl: 'https://example.invalid/app.apk',
+        notes: '功能更新',
+        isPrerelease: true,
+      );
+
+      await AppUpdateService.defer(update, appLaunchCount: 10);
+      final first = await LocalAppStore.instance.loadUpdateDeferral();
+      expect(first?.deferCount, 1);
+      expect(first?.nextPromptLaunch, 15);
+      expect(
+        await AppUpdateService.shouldPrompt(update, appLaunchCount: 14),
+        isFalse,
+      );
+      expect(
+        await AppUpdateService.shouldPrompt(update, appLaunchCount: 15),
+        isTrue,
+      );
+
+      await AppUpdateService.defer(update, appLaunchCount: 15);
+      final second = await LocalAppStore.instance.loadUpdateDeferral();
+      expect(second?.deferCount, 2);
+      expect(second?.nextPromptLaunch, 25);
+      expect(
+        await AppUpdateService.shouldPrompt(update, appLaunchCount: 24),
+        isFalse,
+      );
+      expect(
+        await AppUpdateService.shouldPrompt(update, appLaunchCount: 25),
+        isTrue,
+      );
     });
 
     test('更新来源选择可以持久化恢复', () async {

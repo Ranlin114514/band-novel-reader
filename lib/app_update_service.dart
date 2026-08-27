@@ -14,6 +14,7 @@ class AppUpdateInfo {
     required this.releaseUrl,
     required this.apkUrl,
     required this.notes,
+    required this.isPrerelease,
   });
 
   final String tag;
@@ -21,6 +22,7 @@ class AppUpdateInfo {
   final String releaseUrl;
   final String apkUrl;
   final String notes;
+  final bool isPrerelease;
 }
 
 class AppUpdateDownloadProgress {
@@ -150,6 +152,7 @@ class AppUpdateService {
           releaseUrl: item['html_url'] as String? ?? '',
           apkUrl: source.downloadUrl(apkUrl),
           notes: (item['body'] as String? ?? '').trim(),
+          isPrerelease: item['prerelease'] == true,
         );
         if (latest == null ||
             _versionValue(candidate.tag) > _versionValue(latest.tag)) {
@@ -170,13 +173,30 @@ class AppUpdateService {
     }
   }
 
-  static Future<bool> shouldPrompt(AppUpdateInfo update) async {
-    final deferred = await LocalAppStore.instance.loadDeferredUpdateTag();
-    return deferred != update.tag;
+  static Future<bool> shouldPrompt(
+    AppUpdateInfo update, {
+    required int appLaunchCount,
+  }) async {
+    final deferred = await LocalAppStore.instance.loadUpdateDeferral();
+    if (deferred == null || deferred.tag != update.tag) {
+      return true;
+    }
+    return appLaunchCount >= deferred.nextPromptLaunch;
   }
 
-  static Future<void> defer(AppUpdateInfo update) {
-    return LocalAppStore.instance.saveDeferredUpdateTag(update.tag);
+  static Future<void> defer(
+    AppUpdateInfo update, {
+    required int appLaunchCount,
+  }) async {
+    final previous = await LocalAppStore.instance.loadUpdateDeferral();
+    final deferCount = previous?.tag == update.tag
+        ? previous!.deferCount + 1
+        : 1;
+    await LocalAppStore.instance.saveUpdateDeferral(
+      tag: update.tag,
+      deferCount: deferCount,
+      nextPromptLaunch: appLaunchCount + (deferCount * 5),
+    );
   }
 
   static Future<void> clearDeferred() {

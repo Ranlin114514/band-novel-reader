@@ -103,6 +103,18 @@ class StoredNetworkImportSettings {
   final String authorization;
 }
 
+class StoredUpdateDeferral {
+  const StoredUpdateDeferral({
+    required this.tag,
+    required this.deferCount,
+    required this.nextPromptLaunch,
+  });
+
+  final String tag;
+  final int deferCount;
+  final int nextPromptLaunch;
+}
+
 class StoredAiSettings {
   const StoredAiSettings({
     required this.providerIndex,
@@ -226,6 +238,11 @@ class LocalAppStore {
   static const _aiCustomPromptKey = 'ai_custom_prompt';
   static const _deferredUpdateTagKey = 'deferred_update_tag';
   static const _updateSourceKey = 'update_source';
+  static const _automaticUpdateCheckKey = 'automatic_update_check';
+  static const _updateLaunchCountKey = 'update_launch_count';
+  static const _deferredUpdateCountKey = 'deferred_update_count';
+  static const _deferredUpdateNextPromptLaunchKey =
+      'deferred_update_next_prompt_launch';
 
   Future<StoredNovelDocument> loadDocument() async {
     final preferences = await SharedPreferences.getInstance();
@@ -431,6 +448,65 @@ class LocalAppStore {
     await preferences.setInt(_updateSourceKey, index.clamp(0, 1).toInt());
   }
 
+  Future<bool> isAutomaticUpdateCheckEnabled() async {
+    final preferences = await SharedPreferences.getInstance();
+    return preferences.getBool(_automaticUpdateCheckKey) ?? true;
+  }
+
+  Future<void> saveAutomaticUpdateCheckEnabled(bool enabled) async {
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.setBool(_automaticUpdateCheckKey, enabled);
+  }
+
+  Future<int> registerAppLaunch() async {
+    final preferences = await SharedPreferences.getInstance();
+    final next = (preferences.getInt(_updateLaunchCountKey) ?? 0) + 1;
+    await preferences.setInt(_updateLaunchCountKey, next);
+    return next;
+  }
+
+  Future<int> loadAppLaunchCount() async {
+    final preferences = await SharedPreferences.getInstance();
+    return preferences.getInt(_updateLaunchCountKey) ?? 0;
+  }
+
+  Future<StoredUpdateDeferral?> loadUpdateDeferral() async {
+    final preferences = await SharedPreferences.getInstance();
+    final tag = preferences.getString(_deferredUpdateTagKey)?.trim();
+    if (tag == null || tag.isEmpty) {
+      return null;
+    }
+    return StoredUpdateDeferral(
+      tag: tag,
+      deferCount: (preferences.getInt(_deferredUpdateCountKey) ?? 0)
+          .clamp(0, 1000)
+          .toInt(),
+      nextPromptLaunch:
+          (preferences.getInt(_deferredUpdateNextPromptLaunchKey) ?? 0)
+              .clamp(0, 1 << 30)
+              .toInt(),
+    );
+  }
+
+  Future<void> saveUpdateDeferral({
+    required String tag,
+    required int deferCount,
+    required int nextPromptLaunch,
+  }) async {
+    final preferences = await SharedPreferences.getInstance();
+    await Future.wait([
+      preferences.setString(_deferredUpdateTagKey, tag.trim()),
+      preferences.setInt(
+        _deferredUpdateCountKey,
+        deferCount.clamp(0, 1000).toInt(),
+      ),
+      preferences.setInt(
+        _deferredUpdateNextPromptLaunchKey,
+        nextPromptLaunch.clamp(0, 1 << 30).toInt(),
+      ),
+    ]);
+  }
+
   Future<String?> loadDeferredUpdateTag() async {
     final preferences = await SharedPreferences.getInstance();
     return preferences.getString(_deferredUpdateTagKey);
@@ -443,7 +519,11 @@ class LocalAppStore {
 
   Future<void> clearDeferredUpdateTag() async {
     final preferences = await SharedPreferences.getInstance();
-    await preferences.remove(_deferredUpdateTagKey);
+    await Future.wait([
+      preferences.remove(_deferredUpdateTagKey),
+      preferences.remove(_deferredUpdateCountKey),
+      preferences.remove(_deferredUpdateNextPromptLaunchKey),
+    ]);
   }
 
   Future<void> saveNetworkImportSettings({

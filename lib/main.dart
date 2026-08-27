@@ -522,6 +522,7 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
   String? _wearableBrandId;
   String? _wearableBrandName;
   late final AppLifecycleListener _lifecycleListener;
+  late final Future<int> _appLaunchCount;
 
   StoredLibraryBook? get _selectedBook {
     for (final book in _books) {
@@ -593,6 +594,7 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
       },
     );
     FlutterForegroundTask.addTaskDataCallback(_onBackgroundData);
+    _appLaunchCount = LocalAppStore.instance.registerAppLaunch();
     _safeRestoreState();
     WidgetsBinding.instance.addPostFrameCallback(
       (_) => unawaited(_checkForAppUpdate()),
@@ -1460,6 +1462,11 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
     }
     try {
       final sourceIndex = await LocalAppStore.instance.loadUpdateSourceIndex();
+      final automaticEnabled = await LocalAppStore.instance
+          .isAutomaticUpdateCheckEnabled();
+      if (!forceUpdateDetails && !automaticEnabled) {
+        return;
+      }
       final source = AppUpdateSource
           .values[sourceIndex.clamp(0, AppUpdateSource.values.length - 1)];
       final update = await AppUpdateService.checkForUpdate(source: source);
@@ -1467,10 +1474,24 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
       if (update == null) {
         return;
       }
+      final appLaunchCount = await _appLaunchCount;
       final shouldPrompt =
-          forceUpdateDetails || await AppUpdateService.shouldPrompt(update);
+          forceUpdateDetails ||
+          await AppUpdateService.shouldPrompt(
+            update,
+            appLaunchCount: appLaunchCount,
+          );
       if (!mounted || !shouldPrompt) return;
-      final immediate = await _showUpdateDialog(update);
+      if (update.isPrerelease) {
+        final acceptedRisk = await _showPrereleaseUpdateRiskDialog(update);
+        if (!mounted || !acceptedRisk) {
+          return;
+        }
+      }
+      final immediate = await _showUpdateDialog(
+        update,
+        appLaunchCount: appLaunchCount,
+      );
       if (immediate && mounted) {
         await Navigator.of(context).push<void>(
           MaterialPageRoute(
@@ -1497,7 +1518,36 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
     }
   }
 
-  Future<bool> _showUpdateDialog(AppUpdateInfo update) async {
+  Future<bool> _showPrereleaseUpdateRiskDialog(AppUpdateInfo update) async {
+    final accepted = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => AlertDialog(
+        icon: const Icon(Icons.warning_amber_outlined),
+        title: Text('测试版更新提示：${update.name}'),
+        content: const Text(
+          '该更新为测试版，可能包含未预期的功能变化、兼容性问题或稳定性风险。建议先备份重要内容，并仅在接受这些风险后继续查看更新详情和安装选项。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('暂不查看'),
+          ),
+          FilledButton.icon(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            icon: const Icon(Icons.visibility_outlined),
+            label: const Text('继续查看'),
+          ),
+        ],
+      ),
+    );
+    return accepted ?? false;
+  }
+
+  Future<bool> _showUpdateDialog(
+    AppUpdateInfo update, {
+    required int appLaunchCount,
+  }) async {
     final selected = await showDialog<bool>(
       context: context,
       barrierDismissible: false,
@@ -1514,7 +1564,10 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
         actions: [
           TextButton(
             onPressed: () async {
-              await AppUpdateService.defer(update);
+              await AppUpdateService.defer(
+                update,
+                appLaunchCount: appLaunchCount,
+              );
               if (dialogContext.mounted) {
                 Navigator.of(dialogContext).pop(false);
               }
@@ -2765,7 +2818,8 @@ class _UnifiedSettingsPageState extends State<UnifiedSettingsPage> {
   late bool _richSegmentContent;
   late StartupContentRecommendation _startupRecommendation;
   AppUpdateSource _updateSource = AppUpdateSource.github;
-  bool _isLoadingUpdateSource = true;
+  bool _isLoadingUpdateSettings = true;
+  bool _automaticUpdateCheckEnabled = true;
 
   @override
   void initState() {
@@ -2857,14 +2911,25 @@ class _UnifiedSettingsPageState extends State<UnifiedSettingsPage> {
   }
 
   Future<void> _loadUpdateSource() async {
-    final index = await LocalAppStore.instance.loadUpdateSourceIndex();
+    final values = await Future.wait<Object>([
+      LocalAppStore.instance.loadUpdateSourceIndex(),
+      LocalAppStore.instance.isAutomaticUpdateCheckEnabled(),
+    ]);
+    final index = values[0] as int;
+    final automaticEnabled = values[1] as bool;
     if (mounted) {
       setState(() {
         _updateSource = AppUpdateSource
             .values[index.clamp(0, AppUpdateSource.values.length - 1)];
-        _isLoadingUpdateSource = false;
+        _automaticUpdateCheckEnabled = automaticEnabled;
+        _isLoadingUpdateSettings = false;
       });
     }
+  }
+
+  void _setAutomaticUpdateCheckEnabled(bool enabled) {
+    setState(() => _automaticUpdateCheckEnabled = enabled);
+    unawaited(LocalAppStore.instance.saveAutomaticUpdateCheckEnabled(enabled));
   }
 
   void _setUpdateSource(AppUpdateSource source) {
@@ -3587,22 +3652,40 @@ class _UnifiedSettingsPageState extends State<UnifiedSettingsPage> {
               ),
               const SizedBox(height: 12),
               Card(
+                child: SwitchListTile.adaptive(
+                  secondary: const Icon(Icons.notifications_active_outlined),
+                  title: const Text('自动检查更新'),
+                  subtitle: Text(
+                    _isLoadingUpdateSettings
+                        ? '正在读取更新策略…'
+                        : _automaticUpdateCheckEnabled
+                        ? '启动后检查更高版本；测试版会先显示风险提示。'
+                        : '已关闭；启动时不会检查或弹出更新提示，仍可手动检查。',
+                  ),
+                  value: _automaticUpdateCheckEnabled,
+                  onChanged: _isLoadingUpdateSettings
+                      ? null
+                      : _setAutomaticUpdateCheckEnabled,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Card(
                 child: ListTile(
                   leading: const Icon(Icons.system_update_alt_outlined),
                   title: const Text('更新来源'),
                   subtitle: Text(
-                    _isLoadingUpdateSource
-                        ? '正在读取更新来源设置…'
+                    _isLoadingUpdateSettings
+                        ? '正在读取更新设置…'
                         : '${_updateSource.title} · ${_updateSource.subtitle}',
                   ),
-                  trailing: _isLoadingUpdateSource
+                  trailing: _isLoadingUpdateSettings
                       ? const SizedBox(
                           width: 22,
                           height: 22,
                           child: CircularProgressIndicator(strokeWidth: 2),
                         )
                       : const Icon(Icons.chevron_right_outlined),
-                  onTap: _isLoadingUpdateSource
+                  onTap: _isLoadingUpdateSettings
                       ? null
                       : () async {
                           final selected =
