@@ -1184,23 +1184,30 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
     if (result == null || !mounted) {
       return;
     }
+    final requiresResegment =
+        _maxCharacters != result.maxCharacters ||
+        _compactSegmentContent != result.compactSegmentContent ||
+        _removeEmojiFromSegments != result.removeEmojiFromSegments ||
+        _richSegmentContent != result.richSegmentContent;
     setState(() {
       _sendingConfig = result.config;
       _maxCharacters = result.maxCharacters;
       _compactSegmentContent = result.compactSegmentContent;
       _removeEmojiFromSegments = result.removeEmojiFromSegments;
       _richSegmentContent = result.richSegmentContent;
-      _books = _books
-          .map(
-            (book) => StoredLibraryBook(
-              id: book.id,
-              text: book.text,
-              fileName: book.fileName,
-              customChunks: null,
-              source: book.source,
-            ),
-          )
-          .toList(growable: false);
+      if (requiresResegment) {
+        _books = _books
+            .map(
+              (book) => StoredLibraryBook(
+                id: book.id,
+                text: book.text,
+                fileName: book.fileName,
+                customChunks: null,
+                source: book.source,
+              ),
+            )
+            .toList(growable: false);
+      }
     });
     await _persistLibrary();
   }
@@ -1240,6 +1247,74 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
           .toList(growable: false);
     });
     await _persistLibrary();
+  }
+
+  Future<void> _restoreDefaultSegments() async {
+    final book = _selectedBook;
+    if (book == null) {
+      _showMessage('请先选择并导入一本图书。');
+      return;
+    }
+    if (book.customChunks == null) {
+      _showMessage('当前图书已经使用默认分段规则。');
+      return;
+    }
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        icon: const Icon(Icons.restore_page_outlined),
+        title: const Text('恢复默认分段？'),
+        content: const Text(
+          '将清除当前图书在完整分段预览、批量调整或 AI 总结后保存的自定义分段，并按现有字数、内容紧凑、Emoji 清理和内容丰富规则重新生成。该图书的发送断点也会清除。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton.icon(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            icon: const Icon(Icons.restore_page_outlined),
+            label: const Text('恢复默认'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) {
+      return;
+    }
+    await _pauseTaskBeforeBookSwitch();
+    await LocalAppStore.instance.removeSendingSessionForBook(book.id);
+    if (!mounted) {
+      return;
+    }
+    final remainingSessions = Map<String, StoredSendingSession>.from(
+      _sessionsByBook,
+    )..remove(book.id);
+    setState(() {
+      _books = _books
+          .map(
+            (item) => item.id == book.id
+                ? StoredLibraryBook(
+                    id: item.id,
+                    text: item.text,
+                    fileName: item.fileName,
+                    customChunks: null,
+                    source: item.source,
+                  )
+                : item,
+          )
+          .toList(growable: false);
+      _sessionsByBook = remainingSessions;
+      _session = _sessionForBook(
+        bookId: book.id,
+        sessionsByBook: remainingSessions,
+        legacySession: null,
+      );
+      _isBackgroundRunning = false;
+    });
+    await _persistLibrary();
+    _showMessage('已恢复默认分段，并清除当前图书的发送断点。');
   }
 
   Future<void> _startSelectedBook() async {
@@ -1764,6 +1839,13 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
                 onPressed: _openPreview,
                 icon: const Icon(Icons.preview_outlined),
                 label: const Text('查看完整分段与批量调整'),
+              ),
+            if (book != null) const SizedBox(height: 8),
+            if (book != null)
+              OutlinedButton.icon(
+                onPressed: _restoreDefaultSegments,
+                icon: const Icon(Icons.restore_page_outlined),
+                label: const Text('文本恢复（恢复默认分段）'),
               ),
             if (book != null) const SizedBox(height: 14),
             FilledButton.icon(
@@ -6368,14 +6450,23 @@ class _NetworkApiSettingsPageState extends State<NetworkApiSettingsPage> {
     _urlController = TextEditingController();
     _titleController = TextEditingController();
     _authorizationController = TextEditingController();
+    _urlController.addListener(_autosave);
+    _titleController.addListener(_autosave);
+    _authorizationController.addListener(_autosave);
     unawaited(_load());
   }
 
   @override
   void dispose() {
-    _urlController.dispose();
-    _titleController.dispose();
-    _authorizationController.dispose();
+    _urlController
+      ..removeListener(_autosave)
+      ..dispose();
+    _titleController
+      ..removeListener(_autosave)
+      ..dispose();
+    _authorizationController
+      ..removeListener(_autosave)
+      ..dispose();
     super.dispose();
   }
 
@@ -6392,24 +6483,17 @@ class _NetworkApiSettingsPageState extends State<NetworkApiSettingsPage> {
     });
   }
 
-  Future<void> _save({bool announce = true}) async {
-    final url = _urlController.text.trim();
-    if (url.isNotEmpty) {
-      final uri = Uri.tryParse(url);
-      if (uri == null || (uri.scheme != 'http' && uri.scheme != 'https')) {
-        if (mounted) {
-          setState(() => _message = '请输入以 http:// 或 https:// 开头的 API 地址。');
-        }
-        return;
-      }
-    }
-    await LocalAppStore.instance.saveNetworkImportSettings(
-      url: url,
+  Future<void> _persistSettings() {
+    return LocalAppStore.instance.saveNetworkImportSettings(
+      url: _urlController.text,
       title: _titleController.text,
       authorization: _authorizationController.text,
     );
-    if (mounted && announce) {
-      setState(() => _message = 'API 导入详情已保存。');
+  }
+
+  void _autosave() {
+    if (!_isLoading) {
+      unawaited(_persistSettings());
     }
   }
 
@@ -6434,7 +6518,7 @@ class _NetworkApiSettingsPageState extends State<NetworkApiSettingsPage> {
       });
       return;
     }
-    await _save(announce: false);
+    await _persistSettings();
     if (!mounted) return;
     if (_testCancellationToken.isCancelled) {
       _testCancellationToken = DownloadCancellationToken();
@@ -6641,10 +6725,10 @@ class _NetworkApiSettingsPageState extends State<NetworkApiSettingsPage> {
                       label: const Text('测试连接与响应'),
                     ),
                   const SizedBox(height: 10),
-                  OutlinedButton.icon(
-                    onPressed: _isTesting ? null : _save,
-                    icon: const Icon(Icons.save_outlined),
-                    label: const Text('保存 API 详情'),
+                  Text(
+                    '修改会自动保存；测试前也会再次保存当前输入。',
+                    textAlign: TextAlign.center,
+                    style: Theme.of(context).textTheme.labelMedium,
                   ),
                 ],
               ),
