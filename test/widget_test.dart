@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:novelnotifier/app_update_service.dart';
 import 'package:novelnotifier/book_metadata.dart';
 import 'package:novelnotifier/local_app_store.dart';
 import 'package:novelnotifier/main.dart';
@@ -28,6 +29,30 @@ void main() {
 
       expect(chunks.first, '春雨落在石阶上。');
       expect(chunks.every((chunk) => chunk.runes.length <= 15), isTrue);
+    });
+
+    test('内容紧凑会合并分段前的连续空白行', () {
+      const source = '第一段\n\n\n   \n第二段\n\t\n\n第三段';
+
+      final chunks = NovelTextSplitter.split(
+        source,
+        maxCharacters: 200,
+        compactContent: true,
+      );
+
+      expect(chunks, ['第一段\n\n第二段\n\n第三段']);
+    });
+
+    test('自动删除 Emoji 会保留普通文本和换行', () {
+      const source = '第一段🙂\n第二段❤️\n第三段🚀';
+
+      final chunks = NovelTextSplitter.split(
+        source,
+        maxCharacters: 200,
+        removeEmoji: true,
+      );
+
+      expect(chunks, ['第一段\n第二段\n第三段']);
     });
 
     test('空文本不会生成通知分片', () {
@@ -100,6 +125,51 @@ void main() {
     test('没有文件名时使用未命名小说', () {
       final metadata = BookMetadataResolver.resolve(fileName: null, text: '正文');
       expect(metadata.title, '未命名小说');
+    });
+  });
+
+  group('AppUpdateService', () {
+    test('识别最高的可下载 Alpha 更新包', () async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      server.listen((request) async {
+        request.response.headers.contentType = ContentType.json;
+        request.response.write(
+          jsonEncode([
+            {
+              'tag_name': '2.2Alpha2',
+              'name': 'Band Novel Reader 2.2Alpha2',
+              'draft': false,
+              'html_url': 'https://example.invalid/releases/2.2Alpha2',
+              'body': '更新内容',
+              'assets': [
+                {
+                  'name': 'band-novel-reader.apk',
+                  'browser_download_url':
+                      'https://example.invalid/2.2Alpha2.apk',
+                },
+              ],
+            },
+            {
+              'tag_name': '2.2Alpha1',
+              'name': 'Band Novel Reader 2.2Alpha1',
+              'draft': false,
+              'assets': const [],
+            },
+          ]),
+        );
+        await request.response.close();
+      });
+      addTearDown(server.close);
+
+      final update = await AppUpdateService.checkForUpdate(
+        currentTag: '2.2Alpha1',
+        endpoint: Uri.parse(
+          'http://${server.address.address}:${server.port}/releases',
+        ),
+      );
+
+      expect(update?.tag, '2.2Alpha2');
+      expect(update?.apkUrl, 'https://example.invalid/2.2Alpha2.apk');
     });
   });
 
@@ -180,6 +250,8 @@ void main() {
         modeIndex: 1,
         intervalMilliseconds: 25000,
         customChunks: const ['测试', '正文'],
+        compactSegmentContent: true,
+        removeEmojiFromSegments: true,
       );
       await LocalAppStore.instance.saveSendingSession(
         chunks: const ['测试', '正文'],
@@ -194,8 +266,10 @@ void main() {
 
       expect(document.text, '测试正文');
       expect(document.fileName, '测试书.txt');
-      expect(document.maxCharacters, 180);
+      expect(document.intervalMilliseconds, 25000);
       expect(document.customChunks, const ['测试', '正文']);
+      expect(document.compactSegmentContent, isTrue);
+      expect(document.removeEmojiFromSegments, isTrue);
       expect(session?.nextIndex, 1);
       expect(session?.canResume, isTrue);
     });
@@ -278,12 +352,14 @@ void main() {
 
     test('完成后清除断点不会影响已保存书籍', () async {
       await LocalAppStore.instance.saveDocument(
-        text: '保留的书籍',
-        fileName: '保留.txt',
+        text: '正文',
+        fileName: '书.txt',
         maxCharacters: 120,
         modeIndex: 0,
-        intervalMilliseconds: 15000,
+        intervalMilliseconds: 1000,
         customChunks: null,
+        compactSegmentContent: false,
+        removeEmojiFromSegments: false,
       );
       await LocalAppStore.instance.saveSendingSession(
         chunks: const ['保留'],
@@ -295,7 +371,7 @@ void main() {
       await LocalAppStore.instance.clearSendingSession();
 
       expect(await LocalAppStore.instance.loadSendingSession(), isNull);
-      expect((await LocalAppStore.instance.loadDocument()).text, '保留的书籍');
+      expect((await LocalAppStore.instance.loadDocument()).text, '正文');
     });
   });
 }

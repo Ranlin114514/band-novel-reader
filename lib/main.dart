@@ -13,6 +13,8 @@ import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:http/http.dart' as http;
 import 'package:url_launcher/url_launcher.dart';
 
+import 'app_update_download_page.dart';
+import 'app_update_service.dart';
 import 'book_metadata.dart';
 import 'cache_cleaner.dart';
 import 'local_app_store.dart';
@@ -130,10 +132,17 @@ class SendingConfig {
 }
 
 class AppSettingsResult {
-  const AppSettingsResult({required this.config, required this.maxCharacters});
+  const AppSettingsResult({
+    required this.config,
+    required this.maxCharacters,
+    required this.compactSegmentContent,
+    required this.removeEmojiFromSegments,
+  });
 
   final SendingConfig config;
   final int maxCharacters;
+  final bool compactSegmentContent;
+  final bool removeEmojiFromSegments;
 }
 
 class EditorResult {
@@ -441,6 +450,8 @@ class _NovelHomePageState extends State<NovelHomePage> {
   String _novelText = '';
   String? _fileName;
   int _maxCharacters = 120;
+  bool _compactSegmentContent = false;
+  bool _removeEmojiFromSegments = false;
   SendingConfig _sendingConfig = const SendingConfig.defaults();
   List<String>? _customChunks;
   StoredSendingSession? _resumeSession;
@@ -449,7 +460,12 @@ class _NovelHomePageState extends State<NovelHomePage> {
 
   List<String> get _chunks =>
       _customChunks ??
-      NovelTextSplitter.split(_novelText, maxCharacters: _maxCharacters);
+      NovelTextSplitter.split(
+        _novelText,
+        maxCharacters: _maxCharacters,
+        compactContent: _compactSegmentContent,
+        removeEmoji: _removeEmojiFromSegments,
+      );
 
   @override
   void initState() {
@@ -486,6 +502,8 @@ class _NovelHomePageState extends State<NovelHomePage> {
       _novelText = document.text;
       _fileName = document.fileName;
       _maxCharacters = document.maxCharacters;
+      _compactSegmentContent = document.compactSegmentContent;
+      _removeEmojiFromSegments = document.removeEmojiFromSegments;
       _sendingConfig = SendingConfig(
         mode: _modeFromIndex(document.modeIndex),
         intervalMilliseconds: document.intervalMilliseconds,
@@ -507,6 +525,8 @@ class _NovelHomePageState extends State<NovelHomePage> {
       modeIndex: _sendingConfig.mode.index,
       intervalMilliseconds: _sendingConfig.intervalMilliseconds,
       customChunks: _customChunks,
+      compactSegmentContent: _compactSegmentContent,
+      removeEmojiFromSegments: _removeEmojiFromSegments,
     );
   }
 
@@ -536,6 +556,8 @@ class _NovelHomePageState extends State<NovelHomePage> {
         builder: (_) => UnifiedSettingsPage(
           initialConfig: _sendingConfig,
           initialMaxCharacters: _maxCharacters,
+          initialCompactSegmentContent: _compactSegmentContent,
+          initialRemoveEmojiFromSegments: _removeEmojiFromSegments,
         ),
       ),
     );
@@ -545,6 +567,8 @@ class _NovelHomePageState extends State<NovelHomePage> {
     setState(() {
       _sendingConfig = result.config;
       _maxCharacters = result.maxCharacters;
+      _compactSegmentContent = result.compactSegmentContent;
+      _removeEmojiFromSegments = result.removeEmojiFromSegments;
       _customChunks = null;
     });
     await _persistDocument();
@@ -851,6 +875,8 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
   List<StoredLibraryBook> _books = const [];
   String? _selectedBookId;
   int _maxCharacters = 120;
+  bool _compactSegmentContent = false;
+  bool _removeEmojiFromSegments = false;
   SendingConfig _sendingConfig = const SendingConfig.defaults();
   StoredSendingSession? _session;
   Map<String, StoredSendingSession> _sessionsByBook = const {};
@@ -858,6 +884,7 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
   bool _isSwitchingBook = false;
   bool _isCatalogImporting = false;
   bool _isRecoveringBackground = false;
+  bool _isCheckingForUpdate = false;
   bool _isLoading = true;
   String? _startupError;
   String? _wearableBrandId;
@@ -879,7 +906,12 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
       return const [];
     }
     return book.customChunks ??
-        NovelTextSplitter.split(book.text, maxCharacters: _maxCharacters);
+        NovelTextSplitter.split(
+          book.text,
+          maxCharacters: _maxCharacters,
+          compactContent: _compactSegmentContent,
+          removeEmoji: _removeEmojiFromSegments,
+        );
   }
 
   Future<void> _safeRestoreState() async {
@@ -929,6 +961,9 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
     );
     FlutterForegroundTask.addTaskDataCallback(_onBackgroundData);
     _safeRestoreState();
+    WidgetsBinding.instance.addPostFrameCallback(
+      (_) => unawaited(_checkForAppUpdate()),
+    );
   }
 
   @override
@@ -957,6 +992,8 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
       _books = library.books;
       _selectedBookId = library.selectedBookId;
       _maxCharacters = document.maxCharacters;
+      _compactSegmentContent = document.compactSegmentContent;
+      _removeEmojiFromSegments = document.removeEmojiFromSegments;
       _sendingConfig = SendingConfig(
         mode: _modeFromIndex(document.modeIndex),
         intervalMilliseconds: document.intervalMilliseconds,
@@ -1029,6 +1066,8 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
       maxCharacters: _maxCharacters,
       modeIndex: _sendingConfig.mode.index,
       intervalMilliseconds: _sendingConfig.intervalMilliseconds,
+      compactSegmentContent: _compactSegmentContent,
+      removeEmojiFromSegments: _removeEmojiFromSegments,
     );
   }
 
@@ -1441,6 +1480,8 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
         builder: (_) => UnifiedSettingsPage(
           initialConfig: _sendingConfig,
           initialMaxCharacters: _maxCharacters,
+          initialCompactSegmentContent: _compactSegmentContent,
+          initialRemoveEmojiFromSegments: _removeEmojiFromSegments,
         ),
       ),
     );
@@ -1450,6 +1491,8 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
     setState(() {
       _sendingConfig = result.config;
       _maxCharacters = result.maxCharacters;
+      _compactSegmentContent = result.compactSegmentContent;
+      _removeEmojiFromSegments = result.removeEmojiFromSegments;
       _books = _books
           .map(
             (book) => StoredLibraryBook(
@@ -1712,6 +1755,87 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
     );
   }
 
+  Future<void> _checkForAppUpdate({bool showNoUpdateMessage = false}) async {
+    if (_isCheckingForUpdate) return;
+    if (mounted) {
+      setState(() => _isCheckingForUpdate = true);
+    }
+    try {
+      final update = await AppUpdateService.checkForUpdate();
+      if (!mounted) return;
+      if (update == null) {
+        if (showNoUpdateMessage) {
+          _showMessage('当前已是最新测试版本。');
+        }
+        return;
+      }
+      final shouldPrompt =
+          showNoUpdateMessage || await AppUpdateService.shouldPrompt(update);
+      if (!mounted || !shouldPrompt) return;
+      final immediate = await _showUpdateDialog(update);
+      if (immediate && mounted) {
+        await Navigator.of(context).push<void>(
+          MaterialPageRoute(
+            fullscreenDialog: true,
+            builder: (_) => AppUpdateDownloadPage(
+              update: update,
+              openInstaller: NotificationService.instance.openDownloadedApk,
+            ),
+          ),
+        );
+      }
+    } on FormatException catch (error) {
+      if (showNoUpdateMessage && mounted) {
+        _showMessage(error.message.toString());
+      }
+    } catch (_) {
+      if (showNoUpdateMessage && mounted) {
+        _showMessage('检查更新失败，请检查网络后重试。');
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isCheckingForUpdate = false);
+      }
+    }
+  }
+
+  Future<bool> _showUpdateDialog(AppUpdateInfo update) async {
+    final selected = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => AlertDialog(
+        icon: const Icon(Icons.system_update_alt_outlined),
+        title: Text('发现新版本：${update.name}'),
+        content: SingleChildScrollView(
+          child: Text(
+            update.notes.isEmpty
+                ? '发现可下载的新版本。立即更新会下载 APK 并打开系统安装界面。'
+                : '${update.notes}\n\n立即更新会显示下载进度，并在完成后打开系统安装界面。',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () async {
+              await AppUpdateService.defer(update);
+              if (dialogContext.mounted) {
+                Navigator.of(dialogContext).pop(false);
+              }
+            },
+            child: const Text('稍后'),
+          ),
+          FilledButton(
+            onPressed: () {
+              unawaited(AppUpdateService.clearDeferred());
+              Navigator.of(dialogContext).pop(true);
+            },
+            child: const Text('立即更新'),
+          ),
+        ],
+      ),
+    );
+    return selected ?? false;
+  }
+
   void _showMessage(String message) {
     if (!mounted) {
       return;
@@ -1783,6 +1907,21 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
       appBar: AppBar(
         title: const Text('我的书库'),
         actions: [
+          _isCheckingForUpdate
+              ? const Padding(
+                  padding: EdgeInsets.all(12),
+                  child: SizedBox(
+                    width: 24,
+                    height: 24,
+                    child: CircularProgressIndicator(strokeWidth: 2.5),
+                  ),
+                )
+              : IconButton(
+                  tooltip: '检查更新',
+                  onPressed: () =>
+                      _checkForAppUpdate(showNoUpdateMessage: true),
+                  icon: const Icon(Icons.system_update_alt_outlined),
+                ),
           IconButton(
             tooltip: _wearableBrandName == null
                 ? '选择手环品牌'
@@ -2286,6 +2425,8 @@ class _OnboardingPageState extends State<OnboardingPage> {
       maxCharacters: option.recommendedMaxCharacters,
       modeIndex: document.modeIndex,
       intervalMilliseconds: document.intervalMilliseconds,
+      compactSegmentContent: document.compactSegmentContent,
+      removeEmojiFromSegments: document.removeEmojiFromSegments,
     );
     await LocalAppStore.instance.saveWearablePreset(
       enabled: true,
@@ -2884,11 +3025,15 @@ class UnifiedSettingsPage extends StatefulWidget {
   const UnifiedSettingsPage({
     required this.initialConfig,
     required this.initialMaxCharacters,
+    required this.initialCompactSegmentContent,
+    required this.initialRemoveEmojiFromSegments,
     super.key,
   });
 
   final SendingConfig initialConfig;
   final int initialMaxCharacters;
+  final bool initialCompactSegmentContent;
+  final bool initialRemoveEmojiFromSegments;
 
   @override
   State<UnifiedSettingsPage> createState() => _UnifiedSettingsPageState();
@@ -2907,6 +3052,8 @@ class _UnifiedSettingsPageState extends State<UnifiedSettingsPage> {
   String? _wearablePresetBrandName;
   int? _wearablePresetMaxCharacters;
   bool _startupScreenEnabled = true;
+  late bool _compactSegmentContent;
+  late bool _removeEmojiFromSegments;
 
   @override
   void initState() {
@@ -2918,6 +3065,8 @@ class _UnifiedSettingsPageState extends State<UnifiedSettingsPage> {
     _maxCharactersController = TextEditingController(
       text: widget.initialMaxCharacters.toString(),
     );
+    _compactSegmentContent = widget.initialCompactSegmentContent;
+    _removeEmojiFromSegments = widget.initialRemoveEmojiFromSegments;
     _intervalController.addListener(_onSettingChanged);
     _maxCharactersController.addListener(_onSettingChanged);
     unawaited(_loadWearablePreset());
@@ -3028,6 +3177,8 @@ class _UnifiedSettingsPageState extends State<UnifiedSettingsPage> {
       intervalMilliseconds: _intervalMilliseconds,
     ),
     maxCharacters: _maxCharacters,
+    compactSegmentContent: _compactSegmentContent,
+    removeEmojiFromSegments: _removeEmojiFromSegments,
   );
 
   Future<void> _persistSettings() async {
@@ -3035,6 +3186,8 @@ class _UnifiedSettingsPageState extends State<UnifiedSettingsPage> {
       maxCharacters: _maxCharacters,
       modeIndex: _mode.index,
       intervalMilliseconds: _intervalMilliseconds,
+      compactSegmentContent: _compactSegmentContent,
+      removeEmojiFromSegments: _removeEmojiFromSegments,
     );
     if (_presetLoaded) {
       await LocalAppStore.instance.saveWearablePreset(
@@ -3288,6 +3441,32 @@ class _UnifiedSettingsPageState extends State<UnifiedSettingsPage> {
                         ),
                       ),
               ),
+              const SizedBox(height: 12),
+              Card(
+                child: SwitchListTile.adaptive(
+                  secondary: const Icon(Icons.format_line_spacing_outlined),
+                  title: const Text('内容紧凑'),
+                  subtitle: const Text('开启后会在分段前合并连续空行，删除每段中的多余空白行。'),
+                  value: _compactSegmentContent,
+                  onChanged: (enabled) {
+                    setState(() => _compactSegmentContent = enabled);
+                    unawaited(_persistSettings());
+                  },
+                ),
+              ),
+              const SizedBox(height: 8),
+              Card(
+                child: SwitchListTile.adaptive(
+                  secondary: const Icon(Icons.sentiment_dissatisfied_outlined),
+                  title: const Text('自动删除 Emoji'),
+                  subtitle: const Text('开启后会检测并删除分段文字中的表情符号，减少手环通知显示异常。'),
+                  value: _removeEmojiFromSegments,
+                  onChanged: (enabled) {
+                    setState(() => _removeEmojiFromSegments = enabled);
+                    unawaited(_persistSettings());
+                  },
+                ),
+              ),
               const SizedBox(height: 24),
               Text('发送规则', style: Theme.of(context).textTheme.titleMedium),
               const SizedBox(height: 8),
@@ -3401,7 +3580,7 @@ class _UnifiedSettingsPageState extends State<UnifiedSettingsPage> {
                       const Text('应用版本'),
                       const SizedBox(height: 2),
                       Text(
-                        '2.2Alpha1（2.2.0-alpha.2+10）',
+                        '2.2Alpha2（2.2.0-alpha.3+11）',
                         style: Theme.of(context).textTheme.bodyMedium,
                       ),
                       const SizedBox(height: 18),
@@ -4326,6 +4505,23 @@ class NotificationService {
       throw const FormatException('无法打开华为应用启动管理，请在系统设置中搜索“应用启动管理”。');
     } on MissingPluginException {
       throw const FormatException('当前设备不支持直接打开华为应用启动管理。');
+    }
+  }
+
+  Future<Map<String, dynamic>> openDownloadedApk(String path) async {
+    try {
+      final result = await _systemNotificationChannel
+          .invokeMapMethod<String, dynamic>('openDownloadedApk', {
+            'path': path,
+          });
+      if (result == null) {
+        throw const FormatException('无法打开系统安装界面。');
+      }
+      return Map<String, dynamic>.from(result);
+    } on PlatformException catch (error) {
+      throw FormatException(error.message ?? '无法打开系统安装界面。');
+    } on MissingPluginException {
+      throw const FormatException('当前设备不支持应用内安装更新。');
     }
   }
 
@@ -5859,14 +6055,20 @@ class NovelTextSplitter {
 
   /// 按 Unicode 代码点计数，保证每个分片不超过 [maxCharacters]。
   /// 优先在段落、句末标点和空白处切分，避免把汉语句子生硬截断。
-  static List<String> split(String source, {required int maxCharacters}) {
+  static List<String> split(
+    String source, {
+    required int maxCharacters,
+    bool compactContent = false,
+    bool removeEmoji = false,
+  }) {
     if (maxCharacters <= 0) {
       throw ArgumentError.value(maxCharacters, 'maxCharacters', '必须大于 0。');
     }
-    final normalized = source
-        .replaceAll('\r\n', '\n')
-        .replaceAll('\r', '\n')
-        .trim();
+    final normalized = normalize(
+      source,
+      compactContent: compactContent,
+      removeEmoji: removeEmoji,
+    );
     if (normalized.isEmpty) {
       return const [];
     }
@@ -5892,6 +6094,29 @@ class NovelTextSplitter {
     }
     return result;
   }
+
+  static String normalize(
+    String source, {
+    bool compactContent = false,
+    bool removeEmoji = false,
+  }) {
+    var normalized = source.replaceAll('\r\n', '\n').replaceAll('\r', '\n');
+    if (removeEmoji) {
+      normalized = normalized.replaceAll(_emojiPattern, '');
+    }
+    if (compactContent) {
+      normalized = normalized
+          .replaceAll(RegExp(r'[ \t]+\n'), '\n')
+          .replaceAll(RegExp(r'\n[ \t]+'), '\n')
+          .replaceAll(RegExp(r'\n[ \t]*\n[ \t]*(?:\n[ \t]*)+'), '\n\n');
+    }
+    return normalized.trim();
+  }
+
+  static final RegExp _emojiPattern = RegExp(
+    r'[\u{1F000}-\u{1FAFF}\u{1FC00}-\u{1FFFD}\u{2600}-\u{27BF}\u{2300}-\u{23FF}\u{200D}\u{FE0F}\u{FE0E}]',
+    unicode: true,
+  );
 
   static int? _findPreferredBreak(List<int> runes, int start, int end) {
     // 过早断句会产生很多非常短的通知，因此仅在分片后半段寻找断点。

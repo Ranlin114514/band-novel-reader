@@ -14,6 +14,8 @@ class StoredNovelDocument {
     required this.wearablePresetBrandId,
     required this.wearablePresetBrandName,
     required this.wearablePresetMaxCharacters,
+    required this.compactSegmentContent,
+    required this.removeEmojiFromSegments,
   });
 
   final String text;
@@ -26,6 +28,8 @@ class StoredNovelDocument {
   final String? wearablePresetBrandId;
   final String? wearablePresetBrandName;
   final int? wearablePresetMaxCharacters;
+  final bool compactSegmentContent;
+  final bool removeEmojiFromSegments;
 }
 
 class StoredLibraryBook {
@@ -171,6 +175,9 @@ class LocalAppStore {
   static const _networkApiUrlKey = 'network_api_url';
   static const _networkApiTitleKey = 'network_api_title';
   static const _networkApiAuthorizationKey = 'network_api_authorization';
+  static const _compactSegmentContentKey = 'compact_segment_content';
+  static const _removeEmojiFromSegmentsKey = 'remove_emoji_from_segments';
+  static const _deferredUpdateTagKey = 'deferred_update_tag';
 
   Future<StoredNovelDocument> loadDocument() async {
     final preferences = await SharedPreferences.getInstance();
@@ -197,6 +204,10 @@ class LocalAppStore {
           .getInt(_wearablePresetMaxCharactersKey)
           ?.clamp(20, 1000)
           .toInt(),
+      compactSegmentContent:
+          preferences.getBool(_compactSegmentContentKey) ?? false,
+      removeEmojiFromSegments:
+          preferences.getBool(_removeEmojiFromSegmentsKey) ?? false,
     );
   }
 
@@ -207,6 +218,8 @@ class LocalAppStore {
     required int modeIndex,
     required int intervalMilliseconds,
     required List<String>? customChunks,
+    required bool compactSegmentContent,
+    required bool removeEmojiFromSegments,
   }) async {
     final preferences = await SharedPreferences.getInstance();
     await _saveSettings(
@@ -214,6 +227,8 @@ class LocalAppStore {
       maxCharacters: maxCharacters,
       modeIndex: modeIndex,
       intervalMilliseconds: intervalMilliseconds,
+      compactSegmentContent: compactSegmentContent,
+      removeEmojiFromSegments: removeEmojiFromSegments,
     );
     await preferences.setString(_textKey, text);
     if (fileName == null || fileName.isEmpty) {
@@ -287,6 +302,8 @@ class LocalAppStore {
     required int maxCharacters,
     required int modeIndex,
     required int intervalMilliseconds,
+    required bool compactSegmentContent,
+    required bool removeEmojiFromSegments,
   }) async {
     final preferences = await SharedPreferences.getInstance();
     await _saveSettings(
@@ -294,6 +311,8 @@ class LocalAppStore {
       maxCharacters: maxCharacters,
       modeIndex: modeIndex,
       intervalMilliseconds: intervalMilliseconds,
+      compactSegmentContent: compactSegmentContent,
+      removeEmojiFromSegments: removeEmojiFromSegments,
     );
   }
 
@@ -304,6 +323,21 @@ class LocalAppStore {
       title: preferences.getString(_networkApiTitleKey) ?? '',
       authorization: preferences.getString(_networkApiAuthorizationKey) ?? '',
     );
+  }
+
+  Future<String?> loadDeferredUpdateTag() async {
+    final preferences = await SharedPreferences.getInstance();
+    return preferences.getString(_deferredUpdateTagKey);
+  }
+
+  Future<void> saveDeferredUpdateTag(String tag) async {
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.setString(_deferredUpdateTagKey, tag.trim());
+  }
+
+  Future<void> clearDeferredUpdateTag() async {
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.remove(_deferredUpdateTagKey);
   }
 
   Future<void> saveNetworkImportSettings({
@@ -386,6 +420,8 @@ class LocalAppStore {
     required int maxCharacters,
     required int modeIndex,
     required int intervalMilliseconds,
+    required bool compactSegmentContent,
+    required bool removeEmojiFromSegments,
   }) async {
     await preferences.setInt(
       _maxCharactersKey,
@@ -395,6 +431,11 @@ class LocalAppStore {
     await preferences.setInt(
       _intervalMillisecondsKey,
       intervalMilliseconds.clamp(100, 3600000).toInt(),
+    );
+    await preferences.setBool(_compactSegmentContentKey, compactSegmentContent);
+    await preferences.setBool(
+      _removeEmojiFromSegmentsKey,
+      removeEmojiFromSegments,
     );
   }
 

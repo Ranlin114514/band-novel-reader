@@ -9,6 +9,8 @@ import android.provider.Settings
 import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
+import java.io.File
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodCall
@@ -59,6 +61,7 @@ class MainActivity : FlutterActivity() {
             "openBatteryOptimizationSettings" -> openBatteryOptimizationSettings(result)
             "openHuaweiAppLaunchSettings" -> openHuaweiAppLaunchSettings(result)
             "launchWearableManager" -> launchWearableManager(call, result)
+            "openDownloadedApk" -> openDownloadedApk(call, result)
             else -> result.notImplemented()
         }
     }
@@ -143,6 +146,45 @@ class MainActivity : FlutterActivity() {
                     null,
                 )
             }
+        }
+    }
+
+    private fun openDownloadedApk(call: MethodCall, result: MethodChannel.Result) {
+        val path = call.argument<String>("path")
+        if (path.isNullOrBlank()) {
+            result.error("missing_update_path", "未找到已下载的更新包。", null)
+            return
+        }
+        val apk = File(path)
+        if (!apk.exists() || !apk.isFile || apk.length() <= 0L) {
+            result.error("invalid_update_file", "更新包文件不存在或为空。", null)
+            return
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !packageManager.canRequestPackageInstalls()) {
+            try {
+                startActivity(
+                    Intent(
+                        Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                        Uri.parse("package:$packageName"),
+                    ),
+                )
+                result.success(mapOf("status" to "permission_required"))
+            } catch (error: Exception) {
+                result.error("install_permission_settings_unavailable", "无法打开“允许安装未知应用”设置：${error.message}", null)
+            }
+            return
+        }
+        try {
+            val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", apk)
+            val intent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, "application/vnd.android.package-archive")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            startActivity(intent)
+            result.success(mapOf("status" to "installer_opened"))
+        } catch (error: Exception) {
+            result.error("installer_unavailable", "无法打开系统安装界面：${error.message}", null)
         }
     }
 
