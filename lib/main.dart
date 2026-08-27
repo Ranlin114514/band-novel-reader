@@ -2938,8 +2938,6 @@ class _LaboratoryPageState extends State<LaboratoryPage> {
   int _launchCount = 0;
   List<String> _preview = const [];
   bool _isLoading = true;
-  bool _isSendingNotificationPreview = false;
-  String? _notificationPreviewMessage;
 
   @override
   void initState() {
@@ -2999,68 +2997,6 @@ class _LaboratoryPageState extends State<LaboratoryPage> {
         richContent: document.richSegmentContent,
       );
     });
-  }
-
-  int get _estimatedSeconds {
-    final document = _document;
-    if (document == null || _preview.length < 2) {
-      return 0;
-    }
-    return ((_preview.length - 1) * document.intervalMilliseconds / 1000)
-        .round();
-  }
-
-  String get _estimatedDuration {
-    final seconds = _estimatedSeconds;
-    if (seconds < 60) {
-      return '$seconds 秒';
-    }
-    return '${seconds ~/ 60} 分 ${seconds % 60} 秒';
-  }
-
-  Future<void> _sendNotificationPreview() async {
-    if (_isSendingNotificationPreview) {
-      return;
-    }
-    setState(() {
-      _isSendingNotificationPreview = true;
-      _notificationPreviewMessage = null;
-    });
-    try {
-      final granted = await NotificationService.instance.requestPermission();
-      if (!granted) {
-        if (mounted) {
-          setState(() => _notificationPreviewMessage = '未获得通知权限，请在系统设置中开启后重试。');
-        }
-        return;
-      }
-      final previewText = _preview.isEmpty
-          ? _sampleController.text.trim()
-          : _preview.first;
-      if (previewText.isEmpty) {
-        if (mounted) {
-          setState(() => _notificationPreviewMessage = '请先输入实验文本并运行分段试验。');
-        }
-        return;
-      }
-      await NotificationService.instance.showChunk(
-        id: 923457,
-        index: 0,
-        total: math.max(1, _preview.length),
-        text: previewText,
-      );
-      if (mounted) {
-        setState(() => _notificationPreviewMessage = '预览通知已发送，请检查手机通知栏和手环镜像。');
-      }
-    } catch (error) {
-      if (mounted) {
-        setState(() => _notificationPreviewMessage = '预览通知发送失败：$error');
-      }
-    } finally {
-      if (mounted) {
-        setState(() => _isSendingNotificationPreview = false);
-      }
-    }
   }
 
   @override
@@ -3191,57 +3127,6 @@ class _LaboratoryPageState extends State<LaboratoryPage> {
                       ),
                     ),
                   ),
-                  const SizedBox(height: 12),
-                  Card(
-                    child: Padding(
-                      padding: const EdgeInsets.all(16),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          Text(
-                            '手环通知预览与阅读节奏',
-                            style: theme.textTheme.titleSmall,
-                          ),
-                          const SizedBox(height: 8),
-                          Text(
-                            _preview.isEmpty
-                                ? '运行分段试验后可估算连续发送时长，并将首段作为真实通知发送。'
-                                : '按当前 ${document?.intervalMilliseconds ?? 0} ms 发送间隔，$_preview.length 段预计需 $_estimatedDuration。该操作不会创建发送任务或改变断点。',
-                            style: theme.textTheme.bodySmall,
-                          ),
-                          const SizedBox(height: 12),
-                          FilledButton.icon(
-                            onPressed: _isSendingNotificationPreview
-                                ? null
-                                : _sendNotificationPreview,
-                            icon: _isSendingNotificationPreview
-                                ? const SizedBox(
-                                    width: 18,
-                                    height: 18,
-                                    child: CircularProgressIndicator(
-                                      strokeWidth: 2,
-                                    ),
-                                  )
-                                : const Icon(
-                                    Icons.notifications_active_outlined,
-                                  ),
-                            label: Text(
-                              _isSendingNotificationPreview
-                                  ? '正在发送预览通知…'
-                                  : '发送首段通知预览',
-                            ),
-                          ),
-                          if (_notificationPreviewMessage != null) ...[
-                            const SizedBox(height: 10),
-                            Text(
-                              _notificationPreviewMessage!,
-                              style: theme.textTheme.bodySmall,
-                            ),
-                          ],
-                        ],
-                      ),
-                    ),
-                  ),
                 ],
               ),
       ),
@@ -3337,6 +3222,174 @@ class _ThemePaletteTile extends StatelessWidget {
             ),
           ),
         ),
+      ),
+    );
+  }
+}
+
+class NotificationPreviewPage extends StatefulWidget {
+  const NotificationPreviewPage({super.key});
+
+  @override
+  State<NotificationPreviewPage> createState() =>
+      _NotificationPreviewPageState();
+}
+
+class _NotificationPreviewPageState extends State<NotificationPreviewPage> {
+  final TextEditingController _controller = TextEditingController(
+    text: '这是手环通知小说的预览文本。请检查手机通知栏与手环是否都能完整显示这一段内容。',
+  );
+  StoredNovelDocument? _document;
+  bool _isLoading = true;
+  bool _isSending = false;
+  String? _message;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_load());
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  Future<void> _load() async {
+    final document = await LocalAppStore.instance.loadDocument();
+    if (mounted) {
+      setState(() {
+        _document = document;
+        _isLoading = false;
+      });
+    }
+  }
+
+  List<String> get _chunks {
+    final document = _document;
+    if (document == null) {
+      return const [];
+    }
+    return NovelTextSplitter.split(
+      _controller.text,
+      maxCharacters: document.maxCharacters,
+      compactContent: document.compactSegmentContent,
+      removeEmoji: document.removeEmojiFromSegments,
+      richContent: document.richSegmentContent,
+    );
+  }
+
+  Future<void> _sendPreview() async {
+    if (_isSending) {
+      return;
+    }
+    final chunks = _chunks;
+    if (chunks.isEmpty) {
+      setState(() => _message = '请先输入用于预览的文本。');
+      return;
+    }
+    setState(() {
+      _isSending = true;
+      _message = null;
+    });
+    try {
+      final granted = await NotificationService.instance.requestPermission();
+      if (!granted) {
+        if (mounted) {
+          setState(() => _message = '未获得通知权限，请在系统设置中开启后重试。');
+        }
+        return;
+      }
+      await NotificationService.instance.showChunk(
+        id: 923457,
+        index: 0,
+        total: chunks.length,
+        text: chunks.first,
+      );
+      if (mounted) {
+        setState(() => _message = '预览通知已发送，请检查手机通知栏和手环镜像。');
+      }
+    } catch (error) {
+      if (mounted) {
+        setState(() => _message = '预览通知发送失败：$error');
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isSending = false);
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final document = _document;
+    final chunks = _chunks;
+    final seconds = document == null || chunks.length < 2
+        ? 0
+        : ((chunks.length - 1) * document.intervalMilliseconds / 1000).round();
+    final duration = seconds < 60
+        ? '$seconds 秒'
+        : '${seconds ~/ 60} 分 ${seconds % 60} 秒';
+    return Scaffold(
+      appBar: AppBar(title: const Text('通知预览与阅读节奏')),
+      body: SafeArea(
+        child: _isLoading
+            ? const Center(child: CircularProgressIndicator())
+            : ListView(
+                padding: const EdgeInsets.all(16),
+                children: [
+                  Card(
+                    child: Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Text(
+                        '将按当前正式设置分段：${document!.maxCharacters} 字/段 · ${document.compactSegmentContent ? '内容紧凑' : '保留空行'} · ${document.removeEmojiFromSegments ? '删除 Emoji' : '保留 Emoji'}。预览不会创建发送任务或修改断点。',
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: _controller,
+                    minLines: 4,
+                    maxLines: 7,
+                    onChanged: (_) => setState(() {}),
+                    decoration: const InputDecoration(
+                      labelText: '通知预览文本',
+                      helperText: '会发送按当前设置生成的第一段。',
+                      alignLabelWithHint: true,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Card(
+                    color: Theme.of(context).colorScheme.secondaryContainer,
+                    child: Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Text(
+                        '预览将生成 ${chunks.length} 段；按当前发送间隔连续发送，预计需 $duration。',
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  FilledButton.icon(
+                    onPressed: _isSending ? null : _sendPreview,
+                    icon: _isSending
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.notifications_active_outlined),
+                    label: Text(_isSending ? '正在发送预览通知…' : '发送首段通知预览'),
+                  ),
+                  if (_message != null) ...[
+                    const SizedBox(height: 12),
+                    Text(
+                      _message!,
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ],
+                ],
+              ),
       ),
     );
   }
@@ -3502,7 +3555,9 @@ class _UnifiedSettingsPageState extends State<UnifiedSettingsPage> {
   final GlobalKey _startupKey = GlobalKey();
   final GlobalKey _appearanceKey = GlobalKey();
   final GlobalKey _readingKey = GlobalKey();
-  final GlobalKey _sourcesKey = GlobalKey();
+  final GlobalKey _sendingKey = GlobalKey();
+  final GlobalKey _importKey = GlobalKey();
+  final GlobalKey _aiKey = GlobalKey();
   final GlobalKey _maintenanceKey = GlobalKey();
   final GlobalKey _aboutKey = GlobalKey();
   String? _cacheMessage;
@@ -3847,31 +3902,47 @@ class _UnifiedSettingsPageState extends State<UnifiedSettingsPage> {
                     const Divider(height: 1),
                     ListTile(
                       leading: const Icon(Icons.auto_stories_outlined),
-                      title: const Text('阅读与发送'),
-                      subtitle: const Text('分段规则、手环预设与发送频率'),
+                      title: const Text('阅读'),
+                      subtitle: const Text('分段规则、文字处理与手环预设'),
                       trailing: const Icon(Icons.chevron_right_outlined),
                       onTap: () => _scrollToSection(_readingKey),
                     ),
                     const Divider(height: 1),
                     ListTile(
-                      leading: const Icon(Icons.cloud_outlined),
-                      title: const Text('导入与智能'),
-                      subtitle: const Text('图书 API、AI 设置和模型'),
+                      leading: const Icon(Icons.send_outlined),
+                      title: const Text('发送'),
+                      subtitle: const Text('发送方式、发送间隔与通知预览'),
                       trailing: const Icon(Icons.chevron_right_outlined),
-                      onTap: () => _scrollToSection(_sourcesKey),
+                      onTap: () => _scrollToSection(_sendingKey),
                     ),
                     const Divider(height: 1),
                     ListTile(
-                      leading: const Icon(Icons.storage_outlined),
-                      title: const Text('存储与实验室'),
-                      subtitle: const Text('缓存清理与实验功能'),
+                      leading: const Icon(Icons.cloud_download_outlined),
+                      title: const Text('导入'),
+                      subtitle: const Text('图书 API 和网络书源导入设置'),
+                      trailing: const Icon(Icons.chevron_right_outlined),
+                      onTap: () => _scrollToSection(_importKey),
+                    ),
+                    const Divider(height: 1),
+                    ListTile(
+                      leading: const Icon(Icons.auto_awesome_outlined),
+                      title: const Text('AI'),
+                      subtitle: const Text('AI 服务、模型、连通性与总结提示词'),
+                      trailing: const Icon(Icons.chevron_right_outlined),
+                      onTap: () => _scrollToSection(_aiKey),
+                    ),
+                    const Divider(height: 1),
+                    ListTile(
+                      leading: const Icon(Icons.science_outlined),
+                      title: const Text('实验室'),
+                      subtitle: const Text('实验分段与更新策略诊断'),
                       trailing: const Icon(Icons.chevron_right_outlined),
                       onTap: () => _scrollToSection(_maintenanceKey),
                     ),
                     const Divider(height: 1),
                     ListTile(
                       leading: const Icon(Icons.info_outline),
-                      title: const Text('更新与关于'),
+                      title: const Text('关于'),
                       subtitle: const Text('更新策略、联系信息与项目支持'),
                       trailing: const Icon(Icons.chevron_right_outlined),
                       onTap: () => _scrollToSection(_aboutKey),
@@ -4127,7 +4198,7 @@ class _UnifiedSettingsPageState extends State<UnifiedSettingsPage> {
               Container(
                 key: _readingKey,
                 child: Text(
-                  '阅读与发送',
+                  '阅读',
                   style: Theme.of(context).textTheme.titleMedium,
                 ),
               ),
@@ -4285,7 +4356,13 @@ class _UnifiedSettingsPageState extends State<UnifiedSettingsPage> {
                 ),
               ),
               const SizedBox(height: 24),
-              Text('发送规则', style: Theme.of(context).textTheme.titleMedium),
+              Container(
+                key: _sendingKey,
+                child: Text(
+                  '发送',
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+              ),
               const SizedBox(height: 8),
               SegmentedButton<SendingMode>(
                 segments: const [
@@ -4333,11 +4410,27 @@ class _UnifiedSettingsPageState extends State<UnifiedSettingsPage> {
                   ),
                 ),
               ],
+              const SizedBox(height: 12),
+              Card(
+                child: ListTile(
+                  leading: const Icon(Icons.notifications_active_outlined),
+                  title: const Text('通知预览与阅读节奏'),
+                  subtitle: const Text(
+                    '发送测试通知并估算当前分段与发送间隔的阅读时长；不会创建发送任务或改变断点。',
+                  ),
+                  trailing: const Icon(Icons.chevron_right_outlined),
+                  onTap: () => Navigator.of(context).push<void>(
+                    MaterialPageRoute(
+                      builder: (_) => const NotificationPreviewPage(),
+                    ),
+                  ),
+                ),
+              ),
               const SizedBox(height: 24),
               Container(
-                key: _sourcesKey,
+                key: _importKey,
                 child: Text(
-                  '导入与智能',
+                  '导入',
                   style: Theme.of(context).textTheme.titleMedium,
                 ),
               ),
@@ -4365,7 +4458,15 @@ class _UnifiedSettingsPageState extends State<UnifiedSettingsPage> {
                 ),
               ),
               const SizedBox(height: 24),
-              Text('AI 总结', style: Theme.of(context).textTheme.titleMedium),
+              Container(
+                key: _aiKey,
+                child: Text(
+                  'AI',
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text('AI 总结', style: Theme.of(context).textTheme.titleSmall),
               const SizedBox(height: 8),
               Card(
                 child: ListTile(
@@ -4384,7 +4485,7 @@ class _UnifiedSettingsPageState extends State<UnifiedSettingsPage> {
               Container(
                 key: _maintenanceKey,
                 child: Text(
-                  '存储与实验室',
+                  '实验室',
                   style: Theme.of(context).textTheme.titleMedium,
                 ),
               ),
@@ -4423,7 +4524,7 @@ class _UnifiedSettingsPageState extends State<UnifiedSettingsPage> {
               Container(
                 key: _aboutKey,
                 child: Text(
-                  '更新与关于',
+                  '关于',
                   style: Theme.of(context).textTheme.titleMedium,
                 ),
               ),
