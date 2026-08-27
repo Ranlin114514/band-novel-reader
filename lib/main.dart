@@ -2257,6 +2257,14 @@ class _OnboardingPageState extends State<OnboardingPage> {
     }
   }
 
+  void _showWeChatPayment() {
+    _onboardingPaymentController.animateToPage(
+      1,
+      duration: const Duration(milliseconds: 260),
+      curve: Curves.easeOutCubic,
+    );
+  }
+
   Future<void> _next() async {
     if (_step == 0) {
       setState(() => _step = 1);
@@ -2273,7 +2281,7 @@ class _OnboardingPageState extends State<OnboardingPage> {
     if (_step == 2 && _selectedWearableManager == null) {
       return;
     }
-    if (_step < 6) {
+    if (_step < 5) {
       final nextStep = _step + 1;
       setState(() => _step = nextStep);
       if (nextStep == 5) {
@@ -2327,19 +2335,14 @@ class _OnboardingPageState extends State<OnboardingPage> {
         body: 'AI 总结需要你提供自己的 API、API Key 和模型。请在下一步打开 AI 设置，读取模型列表并测试服务连通性；未配置时仍可正常阅读和发送小说。',
       ),
       (
-        icon: Icons.volunteer_activism_outlined,
-        title: '支持项目继续前行',
-        body: '捐献我们，让我们走的更远。下一页将展示可滑动切换的支付宝和微信支付二维码，感谢每一份支持。',
-      ),
-      (
-        icon: Icons.qr_code_scanner_outlined,
-        title: '扫码支持',
-        body: '请左右滑动切换支付宝和微信支付二维码。二维码展示期间将等待 5 秒后才可继续。',
-      ),
-      (
         icon: Icons.save_outlined,
         title: '本地保存与断点续传',
         body: '小说、分段规则、发送模式和未完成的发送位置均保存在本机。发送中止或重启应用后，可从上一次进度继续。',
+      ),
+      (
+        icon: Icons.volunteer_activism_outlined,
+        title: '支持项目继续前行',
+        body: '这是引导的最后一步。请在下一页查看支付宝或微信支付二维码；可左右滑动切换支付方式。',
       ),
     ];
     if (_step == 5) {
@@ -2393,12 +2396,20 @@ class _OnboardingPageState extends State<OnboardingPage> {
                     style: Theme.of(context).textTheme.labelMedium,
                   ),
                   const SizedBox(height: 12),
+                  OutlinedButton.icon(
+                    onPressed: _onboardingPaymentIndex == 1
+                        ? null
+                        : _showWeChatPayment,
+                    icon: const Icon(Icons.wechat_outlined),
+                    label: const Text('什么没有支付宝，没关系 V 我 50'),
+                  ),
+                  const SizedBox(height: 8),
                   SizedBox(
                     width: double.infinity,
                     child: FilledButton.icon(
                       onPressed: ready ? _next : null,
-                      icon: const Icon(Icons.arrow_forward),
-                      label: Text(ready ? '下一步' : '下一步（$_donationSeconds 秒）'),
+                      icon: const Icon(Icons.check_outlined),
+                      label: Text(ready ? '完成引导' : '完成（$_donationSeconds 秒）'),
                     ),
                   ),
                 ],
@@ -2620,46 +2631,6 @@ class _OnboardingPageState extends State<OnboardingPage> {
                       textAlign: TextAlign.center,
                       style: Theme.of(context).textTheme.bodySmall,
                     ),
-                ],
-                if (_step == 4) ...[
-                  const SizedBox(height: 18),
-                  Expanded(
-                    child: LayoutBuilder(
-                      builder: (context, constraints) => Center(
-                        child: AnimatedScale(
-                          duration: const Duration(milliseconds: 360),
-                          curve: Curves.easeOutBack,
-                          scale: _donationSeconds == 0 ? 1 : 0.96,
-                          child: ConstrainedBox(
-                            constraints: BoxConstraints(
-                              maxWidth: math.min(380, constraints.maxWidth),
-                              maxHeight: constraints.maxHeight,
-                            ),
-                            child: ClipRRect(
-                              borderRadius: BorderRadius.circular(18),
-                              child: SizedBox(
-                                width: double.infinity,
-                                height: double.infinity,
-                                child: Image.asset(
-                                  'assets/images/donation_alipay.webp',
-                                  fit: BoxFit.contain,
-                                  filterQuality: FilterQuality.high,
-                                ),
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    _donationSeconds == 0
-                        ? '感谢支持，你现在可以继续。'
-                        : '请稍候 $_donationSeconds 秒后继续',
-                    textAlign: TextAlign.center,
-                    style: Theme.of(context).textTheme.bodySmall,
-                  ),
                 ],
                 const Spacer(),
                 Row(
