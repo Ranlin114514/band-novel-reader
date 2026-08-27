@@ -1526,8 +1526,23 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
     if (result == null || !mounted) {
       return;
     }
+    // 引导页已将品牌预设和发送方式写入统一设置；返回后重新读取，
+    // 避免主页仍持有的旧状态反向覆盖这些选择。
+    final document = await LocalAppStore.instance.loadDocument();
+    if (!mounted) {
+      return;
+    }
     setState(() {
-      _maxCharacters = result.maxCharacters;
+      _maxCharacters = document.maxCharacters;
+      _compactSegmentContent = document.compactSegmentContent;
+      _removeEmojiFromSegments = document.removeEmojiFromSegments;
+      _richSegmentContent = document.richSegmentContent;
+      _sendingConfig = SendingConfig(
+        mode: _modeFromIndex(document.modeIndex),
+        intervalMilliseconds: document.intervalMilliseconds,
+      );
+      _wearableBrandId = document.wearablePresetBrandId;
+      _wearableBrandName = document.wearablePresetBrandName;
       _books = _books
           .map(
             (book) => StoredLibraryBook(
@@ -1544,7 +1559,9 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
     });
     await LocalAppStore.instance.clearSendingSession();
     await _persistLibrary();
-    _showMessage('已应用 ${result.maxCharacters} 字/段的手环品牌预设；已清除旧分段和断点。');
+    _showMessage(
+      '已应用 ${document.maxCharacters} 字/段的手环品牌预设和${_sendingConfig.mode.title}；已清除旧分段和断点。',
+    );
   }
 
   Future<void> _openBrandPicker() async {
@@ -2197,6 +2214,8 @@ class _OnboardingPageState extends State<OnboardingPage> {
   int _onboardingPaymentIndex = 0;
   StoredAiSettings? _onboardingAiSettings;
   bool _isLoadingOnboardingAiSettings = true;
+  SendingMode _onboardingSendingMode = SendingMode.foreground;
+  bool _isSavingOnboardingSendingMode = false;
 
   static const _wearableManagerOptions = <WearableManagerOption>[
     WearableManagerOption(
@@ -2254,6 +2273,7 @@ class _OnboardingPageState extends State<OnboardingPage> {
     super.initState();
     unawaited(_readNotificationStatus());
     unawaited(_loadOnboardingAiSettings());
+    unawaited(_loadOnboardingSendingMode());
   }
 
   @override
@@ -2267,7 +2287,7 @@ class _OnboardingPageState extends State<OnboardingPage> {
     _donationTimer?.cancel();
     setState(() => _donationSeconds = 5);
     _donationTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      if (!mounted || _step != 5) {
+      if (!mounted || _step != 6) {
         timer.cancel();
         return;
       }
@@ -2278,6 +2298,41 @@ class _OnboardingPageState extends State<OnboardingPage> {
         setState(() => _donationSeconds--);
       }
     });
+  }
+
+  Future<void> _loadOnboardingSendingMode() async {
+    final document = await LocalAppStore.instance.loadDocument();
+    if (mounted) {
+      setState(() {
+        _onboardingSendingMode =
+            SendingMode.values[document.modeIndex.clamp(0, 1)];
+      });
+    }
+  }
+
+  Future<void> _setOnboardingSendingMode(SendingMode mode) async {
+    if (_isSavingOnboardingSendingMode || _onboardingSendingMode == mode) {
+      return;
+    }
+    setState(() => _isSavingOnboardingSendingMode = true);
+    try {
+      final document = await LocalAppStore.instance.loadDocument();
+      await LocalAppStore.instance.saveSettings(
+        maxCharacters: document.maxCharacters,
+        modeIndex: mode.index,
+        intervalMilliseconds: document.intervalMilliseconds,
+        compactSegmentContent: document.compactSegmentContent,
+        removeEmojiFromSegments: document.removeEmojiFromSegments,
+        richSegmentContent: document.richSegmentContent,
+      );
+      if (mounted) {
+        setState(() => _onboardingSendingMode = mode);
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isSavingOnboardingSendingMode = false);
+      }
+    }
   }
 
   Future<void> _loadOnboardingAiSettings() async {
@@ -2423,10 +2478,10 @@ class _OnboardingPageState extends State<OnboardingPage> {
     if (_step == 2 && _selectedWearableManager == null) {
       return;
     }
-    if (_step < 5) {
+    if (_step < 6) {
       final nextStep = _step + 1;
       setState(() => _step = nextStep);
-      if (nextStep == 5) {
+      if (nextStep == 6) {
         _startDonationCountdown();
       }
       return;
@@ -2472,6 +2527,11 @@ class _OnboardingPageState extends State<OnboardingPage> {
         body: '选择你的手环品牌后，应用会自动应用保守的单段字数预设，并打开相应的管理软件。请在其中开启“手环通知小说”的应用通知同步或镜像。',
       ),
       (
+        icon: Icons.send_outlined,
+        title: '选择发送方式',
+        body: '前台自动发送适合在应用保持打开时进行阅读；后台持续发送会启用可见系统服务通知，适合切换应用或锁屏后继续尝试发送。你可随时在“设置 → 发送”中修改。',
+      ),
+      (
         icon: Icons.auto_awesome_outlined,
         title: '配置 AI 总结（可选）',
         body: 'AI 总结需要你提供自己的 API、API Key 和模型。请在下一步打开 AI 设置，读取模型列表并测试服务连通性；未配置时仍可正常阅读和发送小说。',
@@ -2487,7 +2547,7 @@ class _OnboardingPageState extends State<OnboardingPage> {
         body: '这是引导的最后一步。请在下一页查看支付宝或微信支付二维码；可左右滑动切换支付方式。',
       ),
     ];
-    if (_step == 5) {
+    if (_step == 6) {
       final ready = _donationSeconds == 0;
       return PopScope(
         canPop: false,
@@ -2661,7 +2721,7 @@ class _OnboardingPageState extends State<OnboardingPage> {
                     ),
                   ],
                 ],
-                if (_step == 3) ...[
+                if (_step == 4) ...[
                   const SizedBox(height: 18),
                   Card(
                     child: Padding(
@@ -2709,6 +2769,53 @@ class _OnboardingPageState extends State<OnboardingPage> {
                             icon: const Icon(Icons.skip_next_outlined),
                             label: const Text('跳过 AI 设置，稍后再配置'),
                           ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+                if (_step == 3) ...[
+                  const SizedBox(height: 18),
+                  Card(
+                    child: Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          Text(
+                            '发送方式会自动保存',
+                            style: Theme.of(context).textTheme.titleSmall,
+                          ),
+                          const SizedBox(height: 8),
+                          SegmentedButton<SendingMode>(
+                            segments: const [
+                              ButtonSegment(
+                                value: SendingMode.foreground,
+                                icon: Icon(Icons.phone_android_outlined),
+                                label: Text('前台'),
+                              ),
+                              ButtonSegment(
+                                value: SendingMode.background,
+                                icon: Icon(Icons.cloud_sync_outlined),
+                                label: Text('后台'),
+                              ),
+                            ],
+                            selected: {_onboardingSendingMode},
+                            onSelectionChanged: _isSavingOnboardingSendingMode
+                                ? null
+                                : (selected) => unawaited(
+                                    _setOnboardingSendingMode(selected.first),
+                                  ),
+                          ),
+                          const SizedBox(height: 10),
+                          Text(
+                            _onboardingSendingMode.description,
+                            style: Theme.of(context).textTheme.bodySmall,
+                          ),
+                          if (_isSavingOnboardingSendingMode) ...[
+                            const SizedBox(height: 12),
+                            const LinearProgressIndicator(),
+                          ],
                         ],
                       ),
                     ),
@@ -2797,7 +2904,8 @@ class _OnboardingPageState extends State<OnboardingPage> {
                           (_step == 1 && _notificationGranted != true) ||
                               (_step == 2 &&
                                   _selectedWearableManager == null) ||
-                              (_step == 5 && _donationSeconds > 0)
+                              (_step == 3 && _isSavingOnboardingSendingMode) ||
+                              (_step == 6 && _donationSeconds > 0)
                           ? null
                           : _next,
                       icon: Icon(
@@ -3886,7 +3994,7 @@ class _UnifiedSettingsPageState extends State<UnifiedSettingsPage> {
                   children: [
                     ListTile(
                       leading: const Icon(Icons.apps_outlined),
-                      title: const Text('应用与后台'),
+                      title: const Text('后台'),
                       subtitle: const Text('启动页、通知与后台发送保护'),
                       trailing: const Icon(Icons.chevron_right_outlined),
                       onTap: () => _scrollToSection(_startupKey),
@@ -3894,7 +4002,7 @@ class _UnifiedSettingsPageState extends State<UnifiedSettingsPage> {
                     const Divider(height: 1),
                     ListTile(
                       leading: const Icon(Icons.palette_outlined),
-                      title: const Text('主题与色彩'),
+                      title: const Text('主题'),
                       subtitle: const Text('深浅主题、莫奈和调色板'),
                       trailing: const Icon(Icons.chevron_right_outlined),
                       onTap: () => _scrollToSection(_appearanceKey),
@@ -3954,7 +4062,7 @@ class _UnifiedSettingsPageState extends State<UnifiedSettingsPage> {
               Container(
                 key: _startupKey,
                 child: Text(
-                  '应用与后台',
+                  '后台',
                   style: Theme.of(context).textTheme.titleMedium,
                 ),
               ),
@@ -4087,7 +4195,7 @@ class _UnifiedSettingsPageState extends State<UnifiedSettingsPage> {
               Container(
                 key: _appearanceKey,
                 child: Text(
-                  '主题与色彩',
+                  '主题',
                   style: Theme.of(context).textTheme.titleMedium,
                 ),
               ),
