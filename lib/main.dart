@@ -2790,6 +2790,8 @@ class _LaboratoryPageState extends State<LaboratoryPage> {
   int _launchCount = 0;
   List<String> _preview = const [];
   bool _isLoading = true;
+  bool _isSendingNotificationPreview = false;
+  String? _notificationPreviewMessage;
 
   @override
   void initState() {
@@ -2849,6 +2851,68 @@ class _LaboratoryPageState extends State<LaboratoryPage> {
         richContent: document.richSegmentContent,
       );
     });
+  }
+
+  int get _estimatedSeconds {
+    final document = _document;
+    if (document == null || _preview.length < 2) {
+      return 0;
+    }
+    return ((_preview.length - 1) * document.intervalMilliseconds / 1000)
+        .round();
+  }
+
+  String get _estimatedDuration {
+    final seconds = _estimatedSeconds;
+    if (seconds < 60) {
+      return '$seconds 秒';
+    }
+    return '${seconds ~/ 60} 分 ${seconds % 60} 秒';
+  }
+
+  Future<void> _sendNotificationPreview() async {
+    if (_isSendingNotificationPreview) {
+      return;
+    }
+    setState(() {
+      _isSendingNotificationPreview = true;
+      _notificationPreviewMessage = null;
+    });
+    try {
+      final granted = await NotificationService.instance.requestPermission();
+      if (!granted) {
+        if (mounted) {
+          setState(() => _notificationPreviewMessage = '未获得通知权限，请在系统设置中开启后重试。');
+        }
+        return;
+      }
+      final previewText = _preview.isEmpty
+          ? _sampleController.text.trim()
+          : _preview.first;
+      if (previewText.isEmpty) {
+        if (mounted) {
+          setState(() => _notificationPreviewMessage = '请先输入实验文本并运行分段试验。');
+        }
+        return;
+      }
+      await NotificationService.instance.showChunk(
+        id: 923457,
+        index: 0,
+        total: math.max(1, _preview.length),
+        text: previewText,
+      );
+      if (mounted) {
+        setState(() => _notificationPreviewMessage = '预览通知已发送，请检查手机通知栏和手环镜像。');
+      }
+    } catch (error) {
+      if (mounted) {
+        setState(() => _notificationPreviewMessage = '预览通知发送失败：$error');
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isSendingNotificationPreview = false);
+      }
+    }
   }
 
   @override
@@ -2975,6 +3039,57 @@ class _LaboratoryPageState extends State<LaboratoryPage> {
                               '其余 ${_preview.length - 3} 段已省略；本实验不会写入书库。',
                               style: theme.textTheme.bodySmall,
                             ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Card(
+                    child: Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          Text(
+                            '手环通知预览与阅读节奏',
+                            style: theme.textTheme.titleSmall,
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            _preview.isEmpty
+                                ? '运行分段试验后可估算连续发送时长，并将首段作为真实通知发送。'
+                                : '按当前 ${document?.intervalMilliseconds ?? 0} ms 发送间隔，$_preview.length 段预计需 $_estimatedDuration。该操作不会创建发送任务或改变断点。',
+                            style: theme.textTheme.bodySmall,
+                          ),
+                          const SizedBox(height: 12),
+                          FilledButton.icon(
+                            onPressed: _isSendingNotificationPreview
+                                ? null
+                                : _sendNotificationPreview,
+                            icon: _isSendingNotificationPreview
+                                ? const SizedBox(
+                                    width: 18,
+                                    height: 18,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                    ),
+                                  )
+                                : const Icon(
+                                    Icons.notifications_active_outlined,
+                                  ),
+                            label: Text(
+                              _isSendingNotificationPreview
+                                  ? '正在发送预览通知…'
+                                  : '发送首段通知预览',
+                            ),
+                          ),
+                          if (_notificationPreviewMessage != null) ...[
+                            const SizedBox(height: 10),
+                            Text(
+                              _notificationPreviewMessage!,
+                              style: theme.textTheme.bodySmall,
+                            ),
+                          ],
                         ],
                       ),
                     ),
@@ -3996,6 +4111,18 @@ class _UnifiedSettingsPageState extends State<UnifiedSettingsPage> {
                         onTap: () => unawaited(
                           _openExternalLink(
                             'mailto:huanglinran114514@outlook.com',
+                          ),
+                        ),
+                      ),
+                      ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        leading: const Icon(Icons.groups_outlined),
+                        title: const Text('QQ 群'),
+                        subtitle: const Text('1033414307 · 点击使用 QQ 进入群聊'),
+                        trailing: const Icon(Icons.open_in_new_outlined),
+                        onTap: () => unawaited(
+                          _openExternalLink(
+                            'mqqapi://card/show_pslcard?src_type=internal&version=1&uin=1033414307&card_type=group&source=qrcode',
                           ),
                         ),
                       ),
