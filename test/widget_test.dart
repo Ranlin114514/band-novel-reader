@@ -224,6 +224,61 @@ void main() {
       expect(models.single.id, 'story-model');
       expect(summary, '林舟收到信封，决定在雨停前出门。');
     });
+
+    test('后台总结仅为已选原始分段创建候选结果，确认前不写回', () async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      server.listen((request) async {
+        final body = jsonDecode(await utf8.decoder.bind(request).join());
+        final messages = body['messages'] as List;
+        expect(messages.last['content'], contains('完整小说正文'));
+        expect(messages.last['content'], contains('第 1 段、第 3 段'));
+        request.response.headers.contentType = ContentType.json;
+        request.response.write(
+          jsonEncode({
+            'choices': [
+              {
+                'message': {'content': '压缩后的目标分段'},
+              },
+            ],
+          }),
+        );
+        await request.response.close();
+      });
+      addTearDown(server.close);
+      final settings = StoredAiSettings(
+        providerIndex: 0,
+        apiName: '后台任务测试服务',
+        apiKey: 'background-test-key',
+        baseUrl: 'http://${server.address.address}:${server.port}/v1',
+        chatPath: '/chat/completions',
+        model: 'background-model',
+        useReasoning: false,
+        customPrompt: '',
+      );
+      final controller = AiSummaryJobController.instance;
+      controller.clearResult();
+      addTearDown(controller.clearResult);
+      const originalChunks = ['原始第一段', '保留的第二段', '原始第三段'];
+
+      await controller.start(
+        bookId: 'background-test-book',
+        settings: settings,
+        fullNovelText: originalChunks.join('\n'),
+        originalChunks: originalChunks,
+        selectedIndexes: const [0, 2],
+        targetCharacters: 60,
+        richness: SummaryRichness.balanced,
+        normalizeSummary: (summary) => [summary, '续段'],
+      );
+
+      expect(controller.status, AiSummaryJobStatus.completed);
+      final candidate = controller.candidate;
+      expect(candidate, isNotNull);
+      expect(candidate!.summarizedIndexes, [0, 2]);
+      expect(candidate.originalChunks, originalChunks);
+      final applied = candidate.buildAppliedChunks();
+      expect(applied, ['压缩后的目标分段', '续段', '保留的第二段', '压缩后的目标分段', '续段']);
+    });
   });
 
   group('AppUpdateService', () {
