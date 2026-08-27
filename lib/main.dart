@@ -569,6 +569,7 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
   String? _wearableBrandName;
   late final AppLifecycleListener _lifecycleListener;
   late final Future<int> _appLaunchCount;
+  String? _handledAiSummaryJobId;
 
   StoredLibraryBook? get _selectedBook {
     for (final book in _books) {
@@ -592,6 +593,48 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
           removeEmoji: _removeEmojiFromSegments,
           richContent: _richSegmentContent,
         );
+  }
+
+  void _onAiSummaryJobChanged() {
+    final controller = AiSummaryJobController.instance;
+    final jobId = controller.jobId;
+    if (!mounted || jobId == null || _handledAiSummaryJobId == jobId) {
+      return;
+    }
+    final isCompleted =
+        controller.status == AiSummaryJobStatus.completed &&
+        controller.candidate != null;
+    final isFailed = controller.status == AiSummaryJobStatus.failed;
+    if (!isCompleted && !isFailed) {
+      return;
+    }
+    _handledAiSummaryJobId = jobId;
+    if (isCompleted) {
+      final candidate = controller.candidate!;
+      unawaited(
+        NotificationService.instance.showAiSummaryStatus(
+          title: 'AI 总结已完成',
+          body:
+              '已生成 ${candidate.summarizedIndexes.length} 段总结，请返回应用预览后选择覆盖或抛弃。',
+          isError: false,
+        ),
+      );
+      WidgetsBinding.instance.addPostFrameCallback(
+        (_) => unawaited(_showAiSummaryCandidateDialog(candidate)),
+      );
+      return;
+    }
+    final error = controller.error ?? StateError('AI 总结任务未返回错误详情。');
+    unawaited(
+      NotificationService.instance.showAiSummaryStatus(
+        title: 'AI 总结失败',
+        body: '任务未修改书库。请打开应用查看原因分析并调整配置后重试。',
+        isError: true,
+      ),
+    );
+    WidgetsBinding.instance.addPostFrameCallback(
+      (_) => unawaited(_showAiSummaryFailureDialog(error)),
+    );
   }
 
   Future<void> _safeRestoreState() async {
@@ -640,6 +683,7 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
       },
     );
     FlutterForegroundTask.addTaskDataCallback(_onBackgroundData);
+    AiSummaryJobController.instance.addListener(_onAiSummaryJobChanged);
     _appLaunchCount = LocalAppStore.instance.registerAppLaunch();
     _safeRestoreState();
     WidgetsBinding.instance.addPostFrameCallback(
@@ -650,6 +694,7 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
   @override
   void dispose() {
     FlutterForegroundTask.removeTaskDataCallback(_onBackgroundData);
+    AiSummaryJobController.instance.removeListener(_onAiSummaryJobChanged);
     _lifecycleListener.dispose();
     super.dispose();
   }
@@ -1277,6 +1322,8 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
       MaterialPageRoute(
         builder: (_) => SegmentPreviewPage(
           chunks: chunks,
+          bookId: book.id,
+          fullNovelText: book.text,
           maxCharacters: _maxCharacters,
           completedCount: _session?.nextIndex ?? 0,
         ),
@@ -1738,6 +1785,208 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
       ),
     );
     return selected ?? false;
+  }
+
+  bool _sameChunks(List<String> left, List<String> right) {
+    if (left.length != right.length) return false;
+    for (var index = 0; index < left.length; index++) {
+      if (left[index] != right[index]) return false;
+    }
+    return true;
+  }
+
+  Future<void> _showAiSummaryCandidateDialog(
+    AiSummaryCandidate candidate,
+  ) async {
+    if (!mounted ||
+        AiSummaryJobController.instance.candidate?.jobId != candidate.jobId) {
+      return;
+    }
+    final indexes = candidate.summarizedIndexes;
+    final shouldApply = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => AlertDialog(
+        icon: const Icon(Icons.auto_awesome_outlined),
+        title: const Text('AI 总结已完成'),
+        content: SizedBox(
+          width: double.maxFinite,
+          height: MediaQuery.sizeOf(dialogContext).height * 0.58,
+          child: ListView.separated(
+            itemCount: indexes.length,
+            separatorBuilder: (_, _) => const SizedBox(height: 8),
+            itemBuilder: (_, previewIndex) {
+              final originalIndex = indexes[previewIndex];
+              final chunks =
+                  candidate.summaryChunksByOriginalIndex[originalIndex]!;
+              return Card(
+                margin: EdgeInsets.zero,
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        '原第 ${originalIndex + 1} 段的总结结果 · ${chunks.join().runes.length} 字',
+                        style: Theme.of(dialogContext).textTheme.labelLarge,
+                      ),
+                      const SizedBox(height: 6),
+                      SelectableText(chunks.join('\n\n')),
+                    ],
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+        actions: [
+          TextButton.icon(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            icon: const Icon(Icons.delete_outline),
+            label: const Text('抛弃结果'),
+          ),
+          FilledButton.icon(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            icon: const Icon(Icons.done_all_outlined),
+            label: Text('覆盖已选 ${indexes.length} 段'),
+          ),
+        ],
+      ),
+    );
+    if (!mounted ||
+        AiSummaryJobController.instance.candidate?.jobId != candidate.jobId) {
+      return;
+    }
+    if (shouldApply != true) {
+      AiSummaryJobController.instance.clearResult();
+      _showMessage('已抛弃 AI 总结结果，书库内容和发送进度未修改。');
+      return;
+    }
+
+    final bookIndex = _books.indexWhere((book) => book.id == candidate.bookId);
+    if (bookIndex < 0) {
+      AiSummaryJobController.instance.clearResult();
+      _showMessage('目标图书已不存在，已安全抛弃 AI 总结结果。');
+      return;
+    }
+    final book = _books[bookIndex];
+    final currentChunks =
+        book.customChunks ??
+        NovelTextSplitter.split(
+          book.text,
+          maxCharacters: _maxCharacters,
+          compactContent: _compactSegmentContent,
+          removeEmoji: _removeEmojiFromSegments,
+          richContent: _richSegmentContent,
+        );
+    if (!_sameChunks(currentChunks, candidate.originalChunks)) {
+      AiSummaryJobController.instance.clearResult();
+      _showMessage('总结期间该书分段已变更，为避免误覆盖，结果已抛弃。请重新发起 AI 总结。');
+      return;
+    }
+
+    final activeSession = await LocalAppStore.instance.loadSendingSession();
+    if (activeSession?.bookId == candidate.bookId &&
+        await FlutterForegroundTask.isRunningService) {
+      await BackgroundNovelSender.stop();
+    }
+    await LocalAppStore.instance.removeSendingSessionForBook(candidate.bookId);
+    final appliedChunks = candidate.buildAppliedChunks();
+    if (!mounted) return;
+    setState(() {
+      _books = _books
+          .asMap()
+          .entries
+          .map(
+            (entry) => entry.key == bookIndex
+                ? StoredLibraryBook(
+                    id: book.id,
+                    text: book.text,
+                    fileName: book.fileName,
+                    customChunks: appliedChunks,
+                    initialChunks: book.initialChunks,
+                    source: book.source,
+                  )
+                : entry.value,
+          )
+          .toList(growable: false);
+      if (_selectedBookId == candidate.bookId) {
+        _session = null;
+        _isBackgroundRunning = false;
+      }
+    });
+    await _persistLibrary();
+    await _refreshSendingState();
+    AiSummaryJobController.instance.clearResult();
+    _showMessage(
+      '已覆盖 ${candidate.summarizedIndexes.length} 个已选分段，并清除该书不匹配的发送断点。',
+    );
+  }
+
+  String _describeAiSummaryFailure(Object error) {
+    final message = error.toString().toLowerCase();
+    if (message.contains('timeout') || message.contains('超时')) {
+      return 'AI 服务在请求时限内没有返回。完整小说会作为上下文发送，较长作品应选择支持更长上下文、响应更快的模型，并检查网络。';
+    }
+    if (message.contains('http 401') || message.contains('http 403')) {
+      return 'API Key 无效、已过期，或当前密钥没有访问所选模型的权限。';
+    }
+    if (message.contains('http 404')) {
+      return 'Base URL 或聊天路径可能不正确，服务端没有找到对应接口。';
+    }
+    if (message.contains('http 429')) {
+      return '服务当前触发限流或额度不足，请稍后重试并检查服务商账户。';
+    }
+    if (message.contains('http 400') ||
+        message.contains('http 413') ||
+        message.contains('context') ||
+        message.contains('上下文')) {
+      return '模型可能不支持所选参数，或完整小说超过其上下文容量。请核对模型、深度思考开关，并选择更长上下文模型。';
+    }
+    if (message.contains('json') ||
+        message.contains('格式') ||
+        message.contains('空白')) {
+      return '服务返回的不是兼容的 Chat Completions 正文。请检查接口兼容性和模型输出设置。';
+    }
+    return '可能是网络中断、服务暂时不可用或 API 配置不兼容。请核对地址、模型和 Key 后重试。';
+  }
+
+  Future<void> _showAiSummaryFailureDialog(Object error) async {
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        icon: const Icon(Icons.error_outline),
+        title: const Text('AI 后台总结失败'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('原因分析', style: Theme.of(dialogContext).textTheme.titleSmall),
+              const SizedBox(height: 8),
+              Text(_describeAiSummaryFailure(error)),
+              const SizedBox(height: 16),
+              Text(
+                '服务返回信息',
+                style: Theme.of(dialogContext).textTheme.titleSmall,
+              ),
+              const SizedBox(height: 8),
+              SelectableText(
+                error.toString().replaceFirst('FormatException: ', ''),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('了解并返回'),
+          ),
+        ],
+      ),
+    );
+    AiSummaryJobController.instance.clearResult();
   }
 
   void _showMessage(String message) {
@@ -4931,11 +5180,15 @@ class _RichSegmentRiskDialogState extends State<RichSegmentRiskDialog> {
 class SegmentPreviewPage extends StatefulWidget {
   const SegmentPreviewPage({
     required this.chunks,
+    required this.bookId,
+    required this.fullNovelText,
     required this.maxCharacters,
     this.completedCount = 0,
     super.key,
   });
   final List<String> chunks;
+  final String bookId;
+  final String fullNovelText;
   final int maxCharacters;
   final int completedCount;
 
@@ -4958,6 +5211,8 @@ class _SegmentPreviewPageState extends State<SegmentPreviewPage> {
       MaterialPageRoute(
         builder: (_) => AiSegmentSummaryPage(
           chunks: _chunks,
+          bookId: widget.bookId,
+          fullNovelText: widget.fullNovelText,
           maxCharacters: widget.maxCharacters,
         ),
       ),
@@ -5657,6 +5912,12 @@ class NotificationService {
     description: _notificationChannelDescription,
     importance: Importance.defaultImportance,
   );
+  static const _aiSummaryChannel = AndroidNotificationChannel(
+    'ai_summary_status',
+    'AI 总结状态',
+    description: '用于提示 AI 总结任务的完成或失败状态。',
+    importance: Importance.defaultImportance,
+  );
 
   Future<void> initialize() {
     if (_initialized) {
@@ -5679,6 +5940,7 @@ class NotificationService {
           AndroidFlutterLocalNotificationsPlugin
         >();
     await androidPlugin?.createNotificationChannel(_channel);
+    await androidPlugin?.createNotificationChannel(_aiSummaryChannel);
   }
 
   Future<bool> requestPermission() async {
@@ -5822,6 +6084,31 @@ class NotificationService {
       index: index,
       total: total,
       text: text,
+    );
+  }
+
+  Future<void> showAiSummaryStatus({
+    required String title,
+    required String body,
+    required bool isError,
+  }) async {
+    await initialize();
+    final details = NotificationDetails(
+      android: AndroidNotificationDetails(
+        _aiSummaryChannel.id,
+        _aiSummaryChannel.name,
+        channelDescription: _aiSummaryChannel.description,
+        importance: Importance.defaultImportance,
+        priority: Priority.defaultPriority,
+        styleInformation: BigTextStyleInformation(body),
+      ),
+    );
+    await _plugin.show(
+      id: 923458,
+      title: title,
+      body: body,
+      notificationDetails: details,
+      payload: isError ? 'ai-summary:error' : 'ai-summary:completed',
     );
   }
 
@@ -6605,11 +6892,15 @@ class _AiModelPickerPageState extends State<AiModelPickerPage> {
 class AiSegmentSummaryPage extends StatefulWidget {
   const AiSegmentSummaryPage({
     required this.chunks,
+    required this.bookId,
+    required this.fullNovelText,
     required this.maxCharacters,
     super.key,
   });
 
   final List<String> chunks;
+  final String bookId;
+  final String fullNovelText;
   final int maxCharacters;
 
   @override
@@ -6618,13 +6909,14 @@ class AiSegmentSummaryPage extends StatefulWidget {
 
 class _AiSegmentSummaryPageState extends State<AiSegmentSummaryPage> {
   late List<String> _summarizedChunks;
+  late List<String> _originalChunks;
+  final Map<int, List<String>> _summaryChunksByOriginalIndex = {};
   late int _targetCharacters;
   final Set<int> _selectedIndexes = <int>{};
   SummaryRichness _richness = SummaryRichness.balanced;
   StoredAiSettings? _settings;
   bool _isLoadingSettings = true;
   bool _isSummarizing = false;
-  bool _cancelRequested = false;
   int _completed = 0;
   int _total = 0;
   String? _errorMessage;
@@ -6632,9 +6924,31 @@ class _AiSegmentSummaryPageState extends State<AiSegmentSummaryPage> {
   @override
   void initState() {
     super.initState();
-    _summarizedChunks = List<String>.of(widget.chunks);
+    _originalChunks = List<String>.of(widget.chunks);
+    _summarizedChunks = List<String>.of(_originalChunks);
     _targetCharacters = widget.maxCharacters.clamp(20, 250).toInt();
+    final controller = AiSummaryJobController.instance;
+    _isSummarizing = controller.isRunning;
+    _completed = controller.completed;
+    _total = controller.total;
+    controller.addListener(_onBackgroundJobChanged);
     unawaited(_loadSettings());
+  }
+
+  @override
+  void dispose() {
+    AiSummaryJobController.instance.removeListener(_onBackgroundJobChanged);
+    super.dispose();
+  }
+
+  void _onBackgroundJobChanged() {
+    if (!mounted) return;
+    final controller = AiSummaryJobController.instance;
+    setState(() {
+      _isSummarizing = controller.isRunning;
+      _completed = controller.completed;
+      _total = controller.total;
+    });
   }
 
   Future<void> _loadSettings() async {
@@ -6667,12 +6981,142 @@ class _AiSegmentSummaryPageState extends State<AiSegmentSummaryPage> {
     });
   }
 
-  Future<void> _summarize() async {
-    if (_isSummarizing) {
+  // ignore: unused_element
+  Future<bool> _showSummaryPreview(List<int> summarizedIndexes) async {
+    final indexes = summarizedIndexes.toSet().toList()..sort();
+    final shouldApply = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => AlertDialog(
+        icon: const Icon(Icons.preview_outlined),
+        title: const Text('预览 AI 总结结果'),
+        content: SizedBox(
+          width: double.maxFinite,
+          height: MediaQuery.sizeOf(dialogContext).height * 0.58,
+          child: ListView.separated(
+            itemCount: indexes.length,
+            separatorBuilder: (_, _) => const SizedBox(height: 8),
+            itemBuilder: (_, previewIndex) {
+              final originalIndex = indexes[previewIndex];
+              return Card(
+                margin: EdgeInsets.zero,
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        '原第 ${originalIndex + 1} 段的总结结果 · ${_summaryChunksByOriginalIndex[originalIndex]!.join().runes.length} 字',
+                        style: Theme.of(dialogContext).textTheme.labelLarge,
+                      ),
+                      const SizedBox(height: 6),
+                      SelectableText(
+                        _summaryChunksByOriginalIndex[originalIndex]!.join(
+                          '\n\n',
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+        actions: [
+          TextButton.icon(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            icon: const Icon(Icons.delete_outline),
+            label: const Text('抛弃结果'),
+          ),
+          FilledButton.icon(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            icon: const Icon(Icons.done_all_outlined),
+            label: Text('覆盖已选 ${indexes.length} 段'),
+          ),
+        ],
+      ),
+    );
+    return shouldApply ?? false;
+  }
+
+  String _analyzeSummaryError(Object error) {
+    final message = error.toString().toLowerCase();
+    if (message.contains('timeout') || message.contains('超时')) {
+      return '服务在 60 秒内未返回结果。完整小说正文会随每个目标片段一同发送，较长作品需要支持更长上下文且响应更快的模型；请检查网络，或在 AI 设置中更换模型后重试。';
+    }
+    if (message.contains('http 401') || message.contains('http 403')) {
+      return '身份验证被服务拒绝。请在 AI 设置中核对 API Key、服务地址及该密钥的模型访问权限。';
+    }
+    if (message.contains('http 404')) {
+      return '未找到所配置的服务或聊天接口。请核对 Base URL 和聊天路径是否与服务商文档一致。';
+    }
+    if (message.contains('http 429')) {
+      return '服务当前限流或额度不足。请稍后重试，或检查服务商账户额度和并发限制。';
+    }
+    if (message.contains('http 400') ||
+        message.contains('http 413') ||
+        message.contains('context') ||
+        message.contains('上下文')) {
+      return '服务拒绝了当前请求，常见原因是模型不支持所选参数、模型 ID 不可用，或完整小说正文超过模型的上下文容量。请核对模型与深度思考设置，并选择支持更长上下文的模型。';
+    }
+    if (message.contains('http 5')) {
+      return 'AI 服务暂时发生内部错误。请稍后重试；若持续出现，请更换兼容服务或联系服务商。';
+    }
+    if (message.contains('json') ||
+        message.contains('格式') ||
+        message.contains('空白')) {
+      return '服务响应不是可用的聊天完成结果，或没有返回正文。请确认所选接口兼容 Chat Completions，并检查模型输出设置。';
+    }
+    return '可能是网络连接中断、API 配置不兼容或服务商暂时不可用。请核对 AI 设置中的地址、模型和 Key 后重试。';
+  }
+
+  // ignore: unused_element
+  Future<void> _showSummaryErrorDialog(Object error) async {
+    if (!mounted) {
       return;
     }
+    final details = error.toString().replaceFirst('FormatException: ', '');
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        icon: const Icon(Icons.error_outline),
+        title: const Text('AI 总结未完成'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('原因分析', style: Theme.of(dialogContext).textTheme.titleSmall),
+              const SizedBox(height: 8),
+              Text(_analyzeSummaryError(error)),
+              const SizedBox(height: 16),
+              Text(
+                '服务返回信息',
+                style: Theme.of(dialogContext).textTheme.titleSmall,
+              ),
+              const SizedBox(height: 8),
+              SelectableText(details),
+            ],
+          ),
+        ),
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('了解并返回'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _summarize() async {
     final settings = _settings;
+    final controller = AiSummaryJobController.instance;
     if (settings == null) {
+      return;
+    }
+    if (controller.isRunning) {
+      setState(() => _errorMessage = '已有 AI 总结任务正在后台运行，请等待完成或停止后再发起新的任务。');
       return;
     }
     if (settings.apiKey.trim().isEmpty || settings.model.trim().isEmpty) {
@@ -6685,62 +7129,34 @@ class _AiSegmentSummaryPageState extends State<AiSegmentSummaryPage> {
       setState(() => _errorMessage = '请至少选择一个分段，或使用“全选分段”。');
       return;
     }
-    final targetIndexes = _selectedIndexes.toList()
-      ..sort((left, right) => right.compareTo(left));
-    setState(() {
-      _isSummarizing = true;
-      _cancelRequested = false;
-      _completed = 0;
-      _total = targetIndexes.length;
-      _errorMessage = null;
-    });
-    final service = AiSummaryService();
+    final selectedIndexes = _selectedIndexes.toList()..sort();
     try {
-      for (final index in targetIndexes) {
-        if (_cancelRequested) {
-          break;
-        }
-        final source = _summarizedChunks[index];
-        final summary = await service.summarizeSegment(
+      unawaited(
+        controller.start(
+          bookId: widget.bookId,
           settings: settings,
-          content: source,
+          fullNovelText: widget.fullNovelText,
+          originalChunks: _originalChunks,
+          selectedIndexes: selectedIndexes,
           targetCharacters: _targetCharacters,
           richness: _richness,
+          normalizeSummary: (summary) => NovelTextSplitter.split(
+            summary,
+            maxCharacters: widget.maxCharacters,
+          ),
+        ),
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+        ..clearSnackBars()
+        ..showSnackBar(
+          const SnackBar(content: Text('AI 总结已转入后台，可继续浏览其他页面；完成后会弹窗提示并供你预览。')),
         );
-        if (!mounted) {
-          return;
-        }
-        final normalized = NovelTextSplitter.split(
-          summary,
-          maxCharacters: widget.maxCharacters,
-        );
-        if (normalized.isEmpty) {
-          throw const FormatException('AI 返回内容在分段校验后为空。');
-        }
-        _summarizedChunks.replaceRange(index, index + 1, normalized);
-        setState(() => _completed++);
-      }
-      if (mounted && _completed > 0) {
-        setState(() {
-          _selectedIndexes.clear();
-          if (_cancelRequested) {
-            _errorMessage = '已停止后续总结；已完成的 $_completed 段可继续应用。';
-          }
-        });
-      }
-    } on FormatException catch (error) {
-      if (mounted) {
-        setState(() => _errorMessage = error.message.toString());
-      }
-    } catch (_) {
-      if (mounted) {
-        setState(() => _errorMessage = 'AI 总结失败，请检查网络、模型能力、深度思考参数和服务限额后重试。');
-      }
-    } finally {
-      service.dispose();
-      if (mounted) {
-        setState(() => _isSummarizing = false);
-      }
+      Navigator.of(context).pop();
+    } on ArgumentError catch (error) {
+      setState(
+        () => _errorMessage = error.message?.toString() ?? '无法启动 AI 总结任务。',
+      );
     }
   }
 
@@ -6759,8 +7175,8 @@ class _AiSegmentSummaryPageState extends State<AiSegmentSummaryPage> {
             TextButton(
               onPressed: _isSummarizing
                   ? null
-                  : () => Navigator.of(context).pop(_summarizedChunks),
-              child: const Text('应用结果'),
+                  : () => Navigator.of(context).pop(),
+              child: const Text('放弃并返回'),
             ),
           ],
         ),
@@ -6780,7 +7196,7 @@ class _AiSegmentSummaryPageState extends State<AiSegmentSummaryPage> {
                             Text('情节完整性优先', style: theme.textTheme.titleMedium),
                             const SizedBox(height: 8),
                             const Text(
-                              '内置提示词要求 AI 保留人物、事件、转折、线索和因果关系。总结结果会再次按当前最大分段字数校验；仅在你点击“应用结果”后写回书库。',
+                              '无论选择部分分段还是全选，AI 都会先读取完整小说正文以理解上下文。每段生成后会在预览弹窗显示完整结果；只有确认“覆盖当前分段”后才会修改书库。',
                             ),
                           ],
                         ),
@@ -6884,8 +7300,7 @@ class _AiSegmentSummaryPageState extends State<AiSegmentSummaryPage> {
                       ),
                       const SizedBox(height: 12),
                       OutlinedButton.icon(
-                        onPressed: () =>
-                            setState(() => _cancelRequested = true),
+                        onPressed: AiSummaryJobController.instance.cancel,
                         icon: const Icon(Icons.cancel_outlined),
                         label: const Text('停止后续总结'),
                       ),

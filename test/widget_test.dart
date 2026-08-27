@@ -14,11 +14,11 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
   group('AppRelease', () {
-    test('关于页与更新检查共用的发行版本元数据符合 Alpha5 构建', () {
-      expect(AppRelease.tag, '2.2Alpha5');
-      expect(AppRelease.versionName, '2.2.0-alpha.5');
-      expect(AppRelease.versionCode, 13);
-      expect(AppRelease.displayVersion, '2.2Alpha5（2.2.0-alpha.5+13）');
+    test('关于页与更新检查共用的发行版本元数据符合 2.2 正式构建', () {
+      expect(AppRelease.tag, '2.2');
+      expect(AppRelease.versionName, '2.2.0');
+      expect(AppRelease.versionCode, 14);
+      expect(AppRelease.displayVersion, '2.2（2.2.0+14）');
       expect(AppUpdateService.currentReleaseTag, AppRelease.tag);
     });
   });
@@ -172,7 +172,13 @@ void main() {
           expect(body['model'], 'story-model');
           expect(body['reasoning_effort'], 'medium');
           final messages = body['messages'] as List;
-          expect(messages.first['content'], contains('情节完整'));
+          expect(messages.first['content'], contains('完整小说正文'));
+          expect(messages.last['content'], contains('完整小说正文'));
+          expect(messages.last['content'], contains('本次用户选择的总结范围：第 1 段、第 3 段'));
+          expect(
+            messages.last['content'],
+            contains('第一章：林舟在雨夜收到一封没有署名的信。\n第二章：雨停后他前往旧码头寻找寄信人。'),
+          );
           request.response.headers.contentType = ContentType.json;
           request.response.write(
             jsonEncode({
@@ -206,7 +212,11 @@ void main() {
       final models = await service.fetchModels(settings);
       final summary = await service.summarizeSegment(
         settings: settings,
+        fullNovelText: '第一章：林舟在雨夜收到一封没有署名的信。\n第二章：雨停后他前往旧码头寻找寄信人。',
         content: '林舟在雨夜收到一封没有署名的信，他决定在雨停前出门寻找寄信人。',
+        segmentIndex: 0,
+        totalSegments: 3,
+        requestedSegmentIndexes: const [0, 2],
         targetCharacters: 60,
         richness: SummaryRichness.balanced,
       );
