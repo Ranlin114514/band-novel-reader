@@ -1453,7 +1453,7 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
     );
   }
 
-  Future<void> _checkForAppUpdate({bool showNoUpdateMessage = false}) async {
+  Future<void> _checkForAppUpdate({bool forceUpdateDetails = false}) async {
     if (_isCheckingForUpdate) return;
     if (mounted) {
       setState(() => _isCheckingForUpdate = true);
@@ -1462,13 +1462,10 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
       final update = await AppUpdateService.checkForUpdate();
       if (!mounted) return;
       if (update == null) {
-        if (showNoUpdateMessage) {
-          _showMessage('当前已是最新测试版本。');
-        }
         return;
       }
       final shouldPrompt =
-          showNoUpdateMessage || await AppUpdateService.shouldPrompt(update);
+          forceUpdateDetails || await AppUpdateService.shouldPrompt(update);
       if (!mounted || !shouldPrompt) return;
       final immediate = await _showUpdateDialog(update);
       if (immediate && mounted) {
@@ -1483,11 +1480,11 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
         );
       }
     } on FormatException catch (error) {
-      if (showNoUpdateMessage && mounted) {
+      if (forceUpdateDetails && mounted) {
         _showMessage(error.message.toString());
       }
     } catch (_) {
-      if (showNoUpdateMessage && mounted) {
+      if (forceUpdateDetails && mounted) {
         _showMessage('检查更新失败，请检查网络后重试。');
       }
     } finally {
@@ -1616,8 +1613,7 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
                 )
               : IconButton(
                   tooltip: '检查更新',
-                  onPressed: () =>
-                      _checkForAppUpdate(showNoUpdateMessage: true),
+                  onPressed: () => _checkForAppUpdate(forceUpdateDetails: true),
                   icon: const Icon(Icons.system_update_alt_outlined),
                 ),
           IconButton(

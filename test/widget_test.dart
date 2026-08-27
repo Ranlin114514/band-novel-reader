@@ -206,6 +206,40 @@ void main() {
   });
 
   group('AppUpdateService', () {
+    test('当前版本已是最新时不返回更新提示', () async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      server.listen((request) async {
+        request.response.headers.contentType = ContentType.json;
+        request.response.write(
+          jsonEncode([
+            {
+              'tag_name': '2.2Alpha4',
+              'name': 'Band Novel Reader 2.2Alpha4',
+              'draft': false,
+              'assets': [
+                {
+                  'name': 'band-novel-reader.apk',
+                  'browser_download_url':
+                      'https://example.invalid/2.2Alpha4.apk',
+                },
+              ],
+            },
+          ]),
+        );
+        await request.response.close();
+      });
+      addTearDown(server.close);
+
+      final update = await AppUpdateService.checkForUpdate(
+        currentTag: '2.2Alpha4',
+        endpoint: Uri.parse(
+          'http://${server.address.address}:${server.port}/releases',
+        ),
+      );
+
+      expect(update, isNull);
+    });
+
     test('识别最高的可下载 Alpha 更新包', () async {
       final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
       server.listen((request) async {
